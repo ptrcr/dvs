@@ -46,12 +46,40 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean isAcorn = false;
     private int[][] lastTimestamps;
     private int[][] eventMap;
+    private int eventSum;
+    private int subXMin, subXMax, subYMin, subYMax;
+    private int xCenter, yCenter;
+    private long xCenterSum, yCenterSum;
     
-    // ================================= GUI =================================
+    // ================================= GUI PARAMS =================================
+    private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
+    private boolean EnableCenter = getPrefs().getBoolean("Acorn.EnableCenter", true);
     private boolean EnableNeighborsFiltering = getPrefs().getBoolean("Acorn.EnableNeighborsFiltering", true);
     private int threshold = getPrefs().getInt("Acorn.NeighborsThreshold", 0);
     private boolean EnableMarking = getPrefs().getBoolean("Acorn.EnableMarking", true);
     private boolean AGHLogo = getPrefs().getBoolean("Acorn.AGHLogo", true);
+    private boolean IgnoreMultipleNeighbors = getPrefs().getBoolean("Acorn.IgnoreMultipleNeighbors", true);
+    public boolean getEnableSquare() {
+        return EnableSquare;
+    }
+    public void setEnableSquare(boolean enable) {
+        this.EnableSquare = enable;
+        getPrefs().putBoolean("Acorn.EnableSquare", enable);
+    }
+    public boolean getMarkCenter() {
+        return EnableCenter;
+    }
+    public void setMarkCenter(boolean mark) {
+        this.EnableCenter = mark;
+        getPrefs().putBoolean("Acorn.EnableCenter", mark);
+    }
+    public boolean getIgnoreMultipleNeighbors() {
+        return IgnoreMultipleNeighbors;
+    }
+    public void setIgnoreMultipleNeighbors(boolean ignore) {
+        this.IgnoreMultipleNeighbors = ignore;
+        getPrefs().putBoolean("Acorn.IgnoreMultipleNeighbors", ignore);
+    }
     public boolean getNeighborsFilteringEnabled() {
         return EnableNeighborsFiltering;
     }
@@ -83,14 +111,16 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     void allocateMaps(AEChip chip){
         lastTimestamps = new int[chip.getSizeX()][chip.getSizeY()];
     }
-    // =============================== END GUI =================================
+    // =============================== END GUI PARAMS =================================
     
+    //method which allocates memory for eventMap array and/or fills it with zeros
     private void resetEventMap() {
         if (eventMap == null)
             eventMap = new int[getChip().getSizeX()][getChip().getSizeX()];
         for (int x = 0; x < getChip().getSizeX(); x++)
             for (int y = 0; y < getChip().getSizeY(); y++)
                 eventMap[x][y] = 0;
+        eventSum = 0;
     }
     
     public Acorn(AEChip chip) {
@@ -98,23 +128,30 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         initFilter();
         resetFilter();
         
-        //gropus labels
+        //gropu's labels
         final String nf = "Neighbors filtering", ann = "Displaying annotations";
 
         //tooltips
         setPropertyTooltip(ann, "MarkingEnabled", "Set true to mark on display if acorn is found");
         setPropertyTooltip(ann, "AGHLogoEnabled", "Shows information about authors");
+        setPropertyTooltip(ann, "MarkCenter", "Prints dot in the gravity center of events");
+        setPropertyTooltip(ann, "EnableSquare", "Prints square surrounding 90% of events in frame");
         setPropertyTooltip(nf, "NeighborsThreshold", "Sets the threshold for noise filtering");
         setPropertyTooltip(nf, "NeighborsFilteringEnabled", "Enables removing events which do not have enough neighbors");
-
+        setPropertyTooltip(nf, "IgnoreMultipleNeighbors", "Ignore multiple events under the same address");
+        
         //initial values
         setAGHLogoEnabled(true);
         setMarkingEnabled(true);
+        setMarkCenter(false);
+        setEnableSquare(false);
         setNeighborsThreshold(5);
         setNeighborsFilteringEnabled(true);
-    } 
+        setIgnoreMultipleNeighbors(false);
+    }
     
     @Override
+    //main filtering method
     public EventPacket<?> filterPacket(EventPacket<?> in) { 
         //avoid always running filter
         if(!filterEnabled) 
@@ -145,8 +182,11 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             if(x > sx || y > sy || x < 0 || y < 0)
                 continue;
             
+            eventSum++;
             eventMap[x][y]++;
         }
+        countSubRegion();
+        countCenter();
         //second cycle for copying proper events
         for(Object e:in) { 
             BasicEvent i = (BasicEvent)e; 
@@ -168,6 +208,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     }
     
     @Override
+    //function for putting annotations on the rendered output image
     public void annotate(GLAutoDrawable drawable) {
         GL2 gl = drawable.getGL().getGL2();
         checkBlend(gl);
@@ -185,6 +226,19 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                             gl.glColor4f(1f, 0, 0, 1f);
                             gl.glRectf(x, y, x+1f, y+1f);
                         }
+                    }
+                }
+                if(EnableSquare) {
+                    if((x == subXMin || x == subXMax) && y >= subYMin && y <= subYMax
+                    || (y == subYMin  || y == subYMax) && x >= subXMin && x <= subXMax) {
+                        gl.glColor4f(0, 0, 1f, 1f);
+                        gl.glRectf(x, y, x+1f, y+1f);
+                    }
+                }
+                if(EnableCenter) {
+                    if (x == xCenter && y == yCenter) {
+                        gl.glColor4f(1f, 0, 0, 1f);
+                        gl.glRectf(x, y, x+1f, y+1f);
                     }
                 }
             }
@@ -211,6 +265,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         return getChip().getRenderer();
     }
     
+    //method draws AGH logo
     private void drawLogo(GLAutoDrawable drawable) {
         if (!getAGHLogoEnabled()) {
             return;
@@ -238,12 +293,68 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         gl.glPopMatrix();
     }
     
+    //foreach cell counts it's neighbors
     private int sumNeighbors(short x, short y) {
         int sum = 0;
         for (int i = x-1; i <= x+1; i++)
             for (int j = y-1; j <= y+1; j++)
                 if(i > -1 && i < getChip().getSizeX() && j > -1 && j < getChip().getSizeY())
-                    sum += eventMap[i][j];
+                    if(IgnoreMultipleNeighbors)
+                        sum += eventMap[i][j] > 0 ? 1 : 0;
+                    else
+                        sum += eventMap[i][j];
         return sum;
+    }
+    
+    private void countSubRegion() {
+        subXMin = subYMin = 0;
+        subXMax = chip.getSizeX();
+        subYMax = chip.getSizeY();
+        int sum = 0;
+        boolean subXMinSet = false, subXMaxSet = false, subYMinSet = false, subYMaxSet = false;
+        //x limits
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++)
+            {
+                sum += eventMap[x][y];
+                if (!subXMinSet && sum >= 0.1 * eventSum) {
+                    subXMin = x;
+                    subXMinSet = true;
+                }
+                else if (!subXMaxSet && sum >= 0.9 * eventSum) {
+                    subXMax = x;
+                    subXMaxSet = true;
+                }
+            }
+        sum = 0;
+        //ylimits
+        for (int y = 0; y < chip.getSizeY(); y++)
+            for (int x = 0; x < chip.getSizeX(); x++)
+            {
+                sum += eventMap[x][y];
+                if (!subYMinSet && sum >= 0.05 * eventSum) {
+                    subYMin = y;
+                    subYMinSet = true;
+                }
+                else if (!subYMaxSet && sum >= 0.95 * eventSum) {
+                    subYMax = y;
+                    subYMaxSet = true;
+                }
+            }
+    }
+    
+    private void countCenter() {
+        xCenterSum = yCenterSum = 0;
+        xCenter = yCenter = 0;
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++)
+            {
+                xCenterSum += x*eventMap[x][y];
+                yCenterSum += y*eventMap[x][y];
+            }
+        if(eventSum != 0) {
+            xCenter = (int) (xCenterSum / (long) eventSum);
+            yCenter = (int) (yCenterSum / (long) eventSum);
+        }
     }
 }
