@@ -35,6 +35,9 @@ import net.sf.jaer.graphics.AEChipRenderer;
 import net.sf.jaer.graphics.AEViewer;
 import net.sf.jaer.graphics.ChipCanvas;
 import net.sf.jaer.graphics.FrameAnnotater;
+import java.lang.Math;          //sqrt(), round(), toDegrees()
+import javax.swing.JOptionPane; // dialog message
+import javax.swing.JFrame;      // frame for dialog message
 
 
 @Description("Finds acorn in incoming events.")
@@ -46,10 +49,15 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean isAcorn = false;
     private int[][] lastTimestamps;
     private int[][] eventMap;
+    private int[][] processedMap;
     private int eventSum;
     private int subXMin, subXMax, subYMin, subYMax;
     private int xCenter, yCenter;
     private long xCenterSum, yCenterSum;
+    private int[][] sobel;
+    private final int[][] sobelMaskH = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
+    private final int[][] sobelMaskV = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
+    private final int[][] gaussMask = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}};
     
     // ================================= GUI PARAMS =================================
     private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
@@ -59,57 +67,98 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean EnableMarking = getPrefs().getBoolean("Acorn.EnableMarking", true);
     private boolean AGHLogo = getPrefs().getBoolean("Acorn.AGHLogo", true);
     private boolean IgnoreMultipleNeighbors = getPrefs().getBoolean("Acorn.IgnoreMultipleNeighbors", true);
+    private boolean EnableCanny = getPrefs().getBoolean("Acorn.EnableCanny", true);
+    private int CannyT1 = getPrefs().getInt("Acorn.CannyT1", 0);
+    private int CannyT2 = getPrefs().getInt("Acorn.CannyT2", 0);
+    
+    public boolean getEnableCanny() {
+        return this.EnableCanny;
+    }
+    public void setEnableCanny(boolean enable) {
+        this.EnableCanny = enable;
+        getPrefs().putBoolean("Acorn.EnableCanny", enable);
+    }
+    public int getCannyT1() {
+        return this.CannyT1;
+    }
+    public void setCannyT1(int val) {
+        if (val < this.CannyT2)
+        {
+            this.CannyT1 = val;
+            getPrefs().putInt("Acorn.CannyT1", val);
+        }
+        else
+        {
+            JOptionPane.showMessageDialog(new JFrame("Error"), "CannyT1 threshold must be smaller than CannyT2!");
+            getPrefs().putInt("Acorn.CannyT1", this.CannyT1);
+        }
+    }
+    public int getCannyT2() {
+        return this.CannyT2;
+    }
+    public void setCannyT2(int val) {
+        if (val > this.CannyT1)
+        {
+            this.CannyT2 = val;
+            getPrefs().putInt("Acorn.CannyT2", val);
+        }
+        else
+        {
+            JOptionPane.showMessageDialog(new JFrame("Error"), "CannyT2 threshold must be larger than CannyT2!");
+            getPrefs().putInt("Acorn.CannyT2", this.CannyT2);
+        }
+    }
     public boolean getEnableSquare() {
-        return EnableSquare;
+        return this.EnableSquare;
     }
     public void setEnableSquare(boolean enable) {
         this.EnableSquare = enable;
         getPrefs().putBoolean("Acorn.EnableSquare", enable);
     }
     public boolean getMarkCenter() {
-        return EnableCenter;
+        return this.EnableCenter;
     }
     public void setMarkCenter(boolean mark) {
         this.EnableCenter = mark;
         getPrefs().putBoolean("Acorn.EnableCenter", mark);
     }
     public boolean getIgnoreMultipleNeighbors() {
-        return IgnoreMultipleNeighbors;
+        return this.IgnoreMultipleNeighbors;
     }
     public void setIgnoreMultipleNeighbors(boolean ignore) {
         this.IgnoreMultipleNeighbors = ignore;
         getPrefs().putBoolean("Acorn.IgnoreMultipleNeighbors", ignore);
     }
     public boolean getNeighborsFilteringEnabled() {
-        return EnableNeighborsFiltering;
+        return this.EnableNeighborsFiltering;
     }
     public void setNeighborsFilteringEnabled(boolean neighbors) {
         this.EnableNeighborsFiltering = neighbors;
         getPrefs().putBoolean("Acorn.EnableNeighborsFiltering", neighbors);
     }
     public int getNeighborsThreshold() {
-        return threshold;
+        return this.threshold;
     }
     public void setNeighborsThreshold(int th) {
         this.threshold = th;
         getPrefs().putInt("Acorn.NeighborsThreshold", th);
     }
     public boolean getAGHLogoEnabled() {
-        return AGHLogo;
+        return this.AGHLogo;
     }
     public void setAGHLogoEnabled(boolean logoEnabled) {
         this.AGHLogo = logoEnabled;
         getPrefs().putBoolean("Acorn.AGHLogo", logoEnabled);
     }
     public boolean getMarkingEnabled() {
-        return EnableMarking;
+        return this.EnableMarking;
     }
     public void setMarkingEnabled(boolean markingEnabled) {
         this.EnableMarking = markingEnabled;
         getPrefs().putBoolean("Info.AGHLogo", markingEnabled);
     }
     void allocateMaps(AEChip chip){
-        lastTimestamps = new int[chip.getSizeX()][chip.getSizeY()];
+        this.lastTimestamps = new int[chip.getSizeX()][chip.getSizeY()];
     }
     // =============================== END GUI PARAMS =================================
     
@@ -117,9 +166,15 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private void resetEventMap() {
         if (eventMap == null)
             eventMap = new int[getChip().getSizeX()][getChip().getSizeX()];
+        if (processedMap == null)
+            processedMap = new int[chip.getSizeX()][chip.getSizeY()];
+
         for (int x = 0; x < getChip().getSizeX(); x++)
             for (int y = 0; y < getChip().getSizeY(); y++)
+            {
                 eventMap[x][y] = 0;
+                processedMap[x][y] = 0;
+            }
         eventSum = 0;
     }
     
@@ -129,7 +184,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         resetFilter();
         
         //gropu's labels
-        final String nf = "Neighbors filtering", ann = "Displaying annotations";
+        final String nf = "Neighbors filtering", ann = "Displaying annotations", can = "Canny - edge detection";
 
         //tooltips
         setPropertyTooltip(ann, "MarkingEnabled", "Set true to mark on display if acorn is found");
@@ -139,6 +194,9 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setPropertyTooltip(nf, "NeighborsThreshold", "Sets the threshold for noise filtering");
         setPropertyTooltip(nf, "NeighborsFilteringEnabled", "Enables removing events which do not have enough neighbors");
         setPropertyTooltip(nf, "IgnoreMultipleNeighbors", "Ignore multiple events under the same address");
+        setPropertyTooltip(can, "EnableCanny", "Enables Cany edge detection algorithm");
+        setPropertyTooltip(can, "CannyT1", "Canny filter - threshold T1");
+        setPropertyTooltip(can, "CannyT2", "Canny filter - threshold T2");
         
         //initial values
         setAGHLogoEnabled(true);
@@ -148,6 +206,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setNeighborsThreshold(5);
         setNeighborsFilteringEnabled(true);
         setIgnoreMultipleNeighbors(false);
+        setCannyT2(10);
+        setCannyT1(5);
     }
     
     @Override
@@ -187,8 +247,23 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         }
         countSubRegion();
         countCenter();
+
+        // filter map.
+        for (int x = 1; x < chip.getSizeX()-1; x++)
+            for (int y = 1; y < chip.getSizeY()-1; y++)
+                if(EnableNeighborsFiltering)
+                {
+                    if (sumNeighbors((short) x, (short) y) >= this.threshold)
+                        this.processedMap[x][y] = this.eventMap[x][y];
+                }
+                else
+                    this.processedMap[x][y] = this.eventMap[x][y];
+                        
+        if (this.EnableCanny)
+            this.canny(processedMap, processedMap);
+        
         //second cycle for copying proper events
-        for(Object e:in) { 
+        /*for(Object e:in) { 
             BasicEvent i = (BasicEvent)e; 
             short x = (short)(i.x);
             short y = (short)(i.y);
@@ -203,7 +278,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             }
             else
                 outItr.nextOutput().copyFrom(i);
-        }
+        }*/
         return out;
     }
     
@@ -238,6 +313,12 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 if(EnableCenter) {
                     if (x == xCenter && y == yCenter) {
                         gl.glColor4f(1f, 0, 0, 1f);
+                        gl.glRectf(x, y, x+1f, y+1f);
+                    }
+                }
+                if(EnableCanny) {
+                    if (processedMap[x][y] > 0) {
+                        gl.glColor4f(1f, 1f, 1f, 1f);
                         gl.glRectf(x, y, x+1f, y+1f);
                     }
                 }
@@ -355,6 +436,131 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         if(eventSum != 0) {
             xCenter = (int) (xCenterSum / (long) eventSum);
             yCenter = (int) (yCenterSum / (long) eventSum);
+        }
+    }
+    
+    private void convolution(int[][] input, int[][] output, int maskInd) {
+        int[][] mask;
+        switch (maskInd)
+        {
+            case 1:
+                mask = this.sobelMaskH;
+                break;
+            case 2:
+                mask = this.sobelMaskV;
+                break;
+            default:
+                mask = this.gaussMask;
+        }
+        
+        for (int x = 1; x < chip.getSizeX()-1; x++)
+            for (int y = 1; y < chip.getSizeY()-1; y++)
+            {
+                output[x][y] = input[x-1][y-1]*mask[0][0];
+                output[x][y] += input[x-1][y]*mask[0][1];
+                output[x][y] += input[x-1][y+1]*mask[0][2];
+                output[x][y] += input[x][y-1]*mask[1][0];
+                output[x][y] += input[x][y]*mask[1][1];
+                output[x][y] += input[x][y+1]*mask[1][2];
+                output[x][y] += input[x+1][y-1]*mask[2][0];
+                output[x][y] += input[x+1][y]*mask[2][1];
+                output[x][y] += input[x+1][y+1]*mask[2][2];
+            }
+    }
+    
+    // canny edge detection algorithm
+    private void canny(int[][] input, int[][] output) {
+        int[][] gauss = new int[chip.getSizeX()][chip.getSizeY()];
+        int[][] sobelV = new int[chip.getSizeX()][chip.getSizeY()];
+        int[][] sobelH = new int[chip.getSizeX()][chip.getSizeY()];
+        int[][] edgeMap = new int[chip.getSizeX()][chip.getSizeY()];
+        double[][] gradient = new double[chip.getSizeX()][chip.getSizeY()];
+        int[][] direction = new int[chip.getSizeX()][chip.getSizeY()];
+
+        // gaussian filter
+        this.convolution(input, gauss, 0);
+        // sobel operators
+        this.convolution(gauss, sobelH, 1);
+        this.convolution(gauss, sobelV, 2);
+        
+        // gradient and direction computing
+        // prevent from dividing by zero
+        double e = 0.0000001;
+        for (int x = 1; x < chip.getSizeX()-1; x++)
+            for (int y = 1; y < chip.getSizeY()-1; y++)
+            {
+                gradient[x][y] = Math.sqrt(sobelV[x][y]^2 + sobelH[x][y]^2);
+                direction[x][y] = 45 * (int) Math.round(Math.toDegrees(Math.atan(sobelV[x][y]/(sobelH[x][y]+e)))/45.0);
+            }
+        
+        // zerujemy gradienty nie będące maksymalne na kierunku prostopadłym do danego gradientu
+        for (int x = 1; x < chip.getSizeX()-1; x++)
+            for (int y = 1; y < chip.getSizeY()-1; y++)
+            {
+                switch (direction[x][y])
+                {
+                    case -180:
+                    case 0:
+                    case 180:
+                        gradient[x][y] = gradient[x][y] > gradient[x][y-1] && gradient[x][y] > gradient[x][y+1] ? gradient[x][y] : 0;
+                        break;
+                    case 45:
+                    case -135:
+                        gradient[x][y] = gradient[x][y] > gradient[x-1][y-1] && gradient[x][y] > gradient[x+1][y+1] ? gradient[x][y] : 0;
+                        break;
+                    case 135:
+                    case -45:
+                        gradient[x][y] = gradient[x][y] > gradient[x+1][y-1] && gradient[x][y] > gradient[x-1][y+1] ? gradient[x][y] : 0;
+                        break;
+                    default: // 90 v -90
+                        gradient[x][y] = gradient[x][y] > gradient[x-1][y] && gradient[x][y] > gradient[x+1][y] ? gradient[x][y] : 0;
+                }
+            }
+        
+        for (int x = 1; x < chip.getSizeX()-1; x++)
+            for (int y = 1; y < chip.getSizeY()-1; y++)
+            {
+                if (gradient[x][y] > this.CannyT2)
+                {
+                    travers(gradient, direction, edgeMap, x, y, 1);
+                    travers(gradient, direction, edgeMap, x, y, -1);
+                }
+            }
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++)
+            {
+                output[x][y] = edgeMap[x][y];
+            }
+    }
+    
+    // pomocnicza metoda do Canny
+    private void travers(double[][] gradient, int[][] direction, int[][] edgeMap, int x, int y, int side){
+        if (x == 0 || y == 0 || x == chip.getSizeX()-1 || y == chip.getSizeY()-1)
+            return;
+        
+        if (gradient[x][y] > this.CannyT1)
+            edgeMap[x][y] = 1;
+        else
+            return;
+        
+        // rekurencyjnie przechodzimy w kierunku gradientu do momentu aż gradient[x][y] <= CannyT1
+        switch (direction[x][y])
+        {
+            case -180:
+            case 0:
+            case 180:
+                travers(gradient, direction, edgeMap, x+side, y, side);
+                break;
+            case 45:
+            case -135:
+                travers(gradient, direction, edgeMap, x+side, y-side, side);
+                break;
+            case 135:
+            case -45:
+                travers(gradient, direction, edgeMap, x-side, y+side, side);
+                break;
+            default: // 90 v -90
+                travers(gradient, direction, edgeMap, x, y+side, side);
         }
     }
 }
