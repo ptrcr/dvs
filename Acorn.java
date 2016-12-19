@@ -1,3 +1,13 @@
+//TODO: możliwość przywrócenia widoczności ukrytego okna z wynikami z poziomu okna sterowania filtra
+//TODO: jakieś opisy nad wyświetlanymi obrazami, co jest co
+//TODO:
+//TODO:
+//TODO:
+//TODO:
+//TODO:
+//TODO:
+//TODO:
+//TODO:
 
 
 package ch.unizh.ini.jaer.projects.orzeszek;
@@ -38,7 +48,22 @@ import net.sf.jaer.graphics.FrameAnnotater;
 import java.lang.Math;          //sqrt(), round(), toDegrees()
 import javax.swing.JOptionPane; // dialog message
 import javax.swing.JFrame;      // frame for dialog message
-
+import org.opencv.core.Core;
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.MatOfInt;
+import org.opencv.imgproc.Imgproc;
+import org.opencv.core.Size;
+import org.opencv.core.Scalar;
+import org.opencv.core.Point;
+import java.util.List;
+import java.util.ArrayList;
+import java.awt.FlowLayout;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferByte;
+import javax.swing.JLabel;
+import javax.swing.ImageIcon;
 
 @Description("Finds acorn in incoming events.")
 @DevelopmentStatus(DevelopmentStatus.Status.Experimental)
@@ -47,7 +72,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     
     
     private boolean isAcorn = false;
-    private int[][] lastTimestamps;
     private int[][] eventMap;
     private int[][] processedMap;
     private int eventSum;
@@ -58,54 +82,80 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private final int[][] sobelMaskH = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
     private final int[][] sobelMaskV = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
     private final int[][] gaussMask = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}};
-    
+    private Mat konturCV;
+    private Mat edgesCV;
+    private JLabel labelEdges;
+    private JLabel labelContour;
+    private JFrame frame;
+
     // ================================= GUI PARAMS =================================
+    private boolean EnableContour = getPrefs().getBoolean("Acorn.Contour", true);
+    private boolean WygaszanieEventow = getPrefs().getBoolean("Acorn.WygaszanieEventow", true);
     private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
     private boolean EnableCenter = getPrefs().getBoolean("Acorn.EnableCenter", true);
     private boolean EnableNeighborsFiltering = getPrefs().getBoolean("Acorn.EnableNeighborsFiltering", true);
-    private int threshold = getPrefs().getInt("Acorn.NeighborsThreshold", 0);
-    private boolean EnableMarking = getPrefs().getBoolean("Acorn.EnableMarking", true);
+    private int NeighborsThreshold = getPrefs().getInt("Acorn.NeighborsThreshold", 0);
+    private boolean EnableAcornMarking = getPrefs().getBoolean("Acorn.EnableAcornMarking", true);
     private boolean AGHLogo = getPrefs().getBoolean("Acorn.AGHLogo", true);
     private boolean IgnoreMultipleNeighbors = getPrefs().getBoolean("Acorn.IgnoreMultipleNeighbors", true);
     private boolean EnableCanny = getPrefs().getBoolean("Acorn.EnableCanny", true);
-    private int CannyT1 = getPrefs().getInt("Acorn.CannyT1", 0);
-    private int CannyT2 = getPrefs().getInt("Acorn.CannyT2", 0);
+    private float CannyT1 = getPrefs().getFloat("Acorn.CannyT1", 0);
+    private float CannyT2 = getPrefs().getFloat("Acorn.CannyT2", 0);
     
+    public boolean getEnableContour() {
+        return this.EnableContour;
+    }
+    public void setEnableContour(boolean enable) {
+        if (EnableCanny) {
+            this.EnableContour = enable;
+            getPrefs().putBoolean("Acorn.EnableContour", enable);
+        }
+        else if (enable)
+            JOptionPane.showMessageDialog(new JFrame("Error"), "Potrzebne Canny!");
+    }
     public boolean getEnableCanny() {
         return this.EnableCanny;
     }
     public void setEnableCanny(boolean enable) {
         this.EnableCanny = enable;
         getPrefs().putBoolean("Acorn.EnableCanny", enable);
+        if (!enable)
+            setEnableContour(enable);
     }
-    public int getCannyT1() {
+    public boolean getWygaszanieEventow() {
+        return this.WygaszanieEventow;
+    }
+    public void setWygaszanieEventow(boolean enable) {
+        this.WygaszanieEventow = enable;
+        getPrefs().putBoolean("Acorn.WygaszanieEventow", enable);
+    }
+    public float getCannyT1() {
         return this.CannyT1;
     }
-    public void setCannyT1(int val) {
+    public void setCannyT1(float val) {
         if (val < this.CannyT2)
         {
             this.CannyT1 = val;
-            getPrefs().putInt("Acorn.CannyT1", val);
+            getPrefs().putFloat("Acorn.CannyT1", val);
         }
         else
         {
             JOptionPane.showMessageDialog(new JFrame("Error"), "CannyT1 threshold must be smaller than CannyT2!");
-            getPrefs().putInt("Acorn.CannyT1", this.CannyT1);
+            getPrefs().putFloat("Acorn.CannyT1", this.CannyT1);
         }
     }
-    public int getCannyT2() {
+    public float getCannyT2() {
         return this.CannyT2;
     }
-    public void setCannyT2(int val) {
+    public void setCannyT2(float val) {
         if (val > this.CannyT1)
         {
             this.CannyT2 = val;
-            getPrefs().putInt("Acorn.CannyT2", val);
+            getPrefs().putFloat("Acorn.CannyT2", val);
         }
         else
         {
-            JOptionPane.showMessageDialog(new JFrame("Error"), "CannyT2 threshold must be larger than CannyT2!");
-            getPrefs().putInt("Acorn.CannyT2", this.CannyT2);
+            getPrefs().putFloat("Acorn.CannyT2", this.CannyT2);
         }
     }
     public boolean getEnableSquare() {
@@ -137,10 +187,10 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         getPrefs().putBoolean("Acorn.EnableNeighborsFiltering", neighbors);
     }
     public int getNeighborsThreshold() {
-        return this.threshold;
+        return this.NeighborsThreshold;
     }
     public void setNeighborsThreshold(int th) {
-        this.threshold = th;
+        this.NeighborsThreshold = th;
         getPrefs().putInt("Acorn.NeighborsThreshold", th);
     }
     public boolean getAGHLogoEnabled() {
@@ -150,44 +200,53 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         this.AGHLogo = logoEnabled;
         getPrefs().putBoolean("Acorn.AGHLogo", logoEnabled);
     }
-    public boolean getMarkingEnabled() {
-        return this.EnableMarking;
+    public boolean getEnableAcornMarking() {
+        return this.EnableAcornMarking;
     }
-    public void setMarkingEnabled(boolean markingEnabled) {
-        this.EnableMarking = markingEnabled;
+    public void setEnableAcornMarking(boolean markingEnabled) {
+        this.EnableAcornMarking = markingEnabled;
         getPrefs().putBoolean("Info.AGHLogo", markingEnabled);
-    }
-    void allocateMaps(AEChip chip){
-        this.lastTimestamps = new int[chip.getSizeX()][chip.getSizeY()];
     }
     // =============================== END GUI PARAMS =================================
     
-    //method which allocates memory for eventMap array and/or fills it with zeros
-    private void resetEventMap() {
+    // method which allocates memory for arrays
+    private void initMaps() {
+        if (edgesCV == null)
+            edgesCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_32F);
+        if (konturCV == null)
+            konturCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
         if (eventMap == null)
             eventMap = new int[getChip().getSizeX()][getChip().getSizeX()];
         if (processedMap == null)
             processedMap = new int[chip.getSizeX()][chip.getSizeY()];
-
+    }
+    
+    // method which fills maps with zeros
+    private void resetMaps() {
+        initMaps();
         for (int x = 0; x < getChip().getSizeX(); x++)
             for (int y = 0; y < getChip().getSizeY(); y++)
             {
                 eventMap[x][y] = 0;
                 processedMap[x][y] = 0;
+                konturCV.put(x, y, 0);
+                edgesCV.put(x, y, 0);
             }
         eventSum = 0;
     }
     
     public Acorn(AEChip chip) {
         super(chip);
+        System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
         initFilter();
         resetFilter();
         
-        //gropu's labels
+        // gropu's labels
         final String nf = "Neighbors filtering", ann = "Displaying annotations", can = "Canny - edge detection";
 
-        //tooltips
-        setPropertyTooltip(ann, "MarkingEnabled", "Set true to mark on display if acorn is found");
+        // tooltips
+        setPropertyTooltip("WygaszanieEventow", "Tworząc mapę eventów uwzględnia czas wystąpienia eventu - im starszy tym ma mniejszą wartość");
+        setPropertyTooltip(ann, "EnableAcornMarking", "Set true to mark on display if acorn is found");
         setPropertyTooltip(ann, "AGHLogoEnabled", "Shows information about authors");
         setPropertyTooltip(ann, "MarkCenter", "Prints dot in the gravity center of events");
         setPropertyTooltip(ann, "EnableSquare", "Prints square surrounding 90% of events in frame");
@@ -197,17 +256,32 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setPropertyTooltip(can, "EnableCanny", "Enables Cany edge detection algorithm");
         setPropertyTooltip(can, "CannyT1", "Canny filter - threshold T1");
         setPropertyTooltip(can, "CannyT2", "Canny filter - threshold T2");
+        setPropertyTooltip("EnableContour", "Zaznacza kontur wykrytego obiektu");
         
-        //initial values
+        // initial values
+        setWygaszanieEventow(true);
         setAGHLogoEnabled(true);
-        setMarkingEnabled(true);
-        setMarkCenter(false);
-        setEnableSquare(false);
+        setEnableAcornMarking(true);
+        setMarkCenter(true);
+        setEnableSquare(true);
         setNeighborsThreshold(5);
         setNeighborsFilteringEnabled(true);
-        setIgnoreMultipleNeighbors(false);
-        setCannyT2(10);
-        setCannyT1(5);
+        setIgnoreMultipleNeighbors(true);
+        setEnableCanny(true);
+        setCannyT2((float) 2.0);
+        setCannyT1((float) 0.3);
+        setEnableContour(true);
+        
+        // nowe okno do wyświetlania wyników poszczególnych etapów
+        frame = new JFrame();
+        frame.setLayout(new FlowLayout());
+        frame.setSize(2*128+50, 2*128+50); //chip.getSizeX() nie działa (dlaczego?)
+        labelEdges = new JLabel();
+        labelContour = new JLabel();
+        frame.add(labelEdges);
+        frame.add(labelContour);
+        frame.setVisible(true);
+        frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
     }
     
     @Override
@@ -219,66 +293,142 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         
         //making sure we have a valid output packet
         checkOutputPacketEventType(in); 
-        if(lastTimestamps==null) 
-            allocateMaps(chip);
         
-        //check if memory for eventMap has been allocated 
-        resetEventMap();
+        // resets Maps
+        resetMaps();
         
-        //initialize and obtain the output event iterator
+        // initialize and obtain the output event iterator
         OutputEventIterator outItr = out.outputIterator(); 
         int sx=chip.getSizeX()-1;
         int sy=chip.getSizeY()-1;
         int ts=0;
         
-        //iterate over the inpu packet, cast the object to basic
-        //event to get timestamp, x and y
+        // min and max timestamp
+        int minTS = 2^31-1;
+        int maxTS = 0;
+        for(Object e:in) {
+            BasicEvent i = (BasicEvent)e; 
+            if (i.timestamp < minTS)
+                minTS = i.timestamp;
+            else if (i.timestamp > maxTS)
+                maxTS = i.timestamp;
+        }
+        
+        // iterate over the inpu packet, cast the object to basic
+        // event to get timestamp, x and y
+        float[][] initialMap = new float[chip.getSizeX()][chip.getSizeY()];
         for(Object e:in) { 
             BasicEvent i = (BasicEvent)e; 
             short x = (short)(i.x);
             short y = (short)(i.y);
             
-            //ignore special events, e.g. with negative address
+            // ignore special events, e.g. with negative address
             if(x > sx || y > sy || x < 0 || y < 0)
                 continue;
             
             eventSum++;
-            eventMap[x][y]++;
+            if(!this.WygaszanieEventow)
+                initialMap[x][y] += 1;
+            else
+                initialMap[x][y] += 1.0*(i.timestamp - minTS)/(maxTS - minTS);
         }
-        countSubRegion();
-        countCenter();
 
+        // find max and min
+        float min = 9999999;
+        float max = 0;
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++){
+                if (initialMap[x][y] < min)
+                    min = initialMap[x][y];
+                else if (initialMap[x][y] > max)
+                    max = initialMap[x][y];
+            }
+        
+        // normalize map
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++){
+                eventMap[x][y] = (int) (initialMap[x][y]-min)*255/((int) max + 1); // prevents dividing by zero
+            }
+                    
         // filter map.
-        for (int x = 1; x < chip.getSizeX()-1; x++)
-            for (int y = 1; y < chip.getSizeY()-1; y++)
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++)
                 if(EnableNeighborsFiltering)
                 {
-                    if (sumNeighbors((short) x, (short) y) >= this.threshold)
+                    if (sumNeighbors((short) x, (short) y) >= this.NeighborsThreshold)
                         this.processedMap[x][y] = this.eventMap[x][y];
                 }
                 else
                     this.processedMap[x][y] = this.eventMap[x][y];
-                        
-        if (this.EnableCanny)
-            this.canny(processedMap, processedMap);
         
+        // wyznacz środek ciężkości jeżeli nie będzie wyznaczany później
+        if (!EnableCanny) {
+            countSubRegion();
+            countCenter();
+        }
+
+        // copy to openCV Mat type
+        Mat mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++)
+                mapCV.put(x, y, processedMap[x][y]);
+ 
+        if (EnableCanny) {
+            // wykrywanie krawędzi
+            Imgproc.Canny(mapCV, edgesCV, CannyT1, CannyT2);
+
+            // kontur
+            List<MatOfPoint> contours = new ArrayList<>();
+            Mat hierarchy = new Mat();
+            // constans from sj.opencv.Constants (nie zainstalowane)
+            int CV_CHAIN_APPROX_TC89_L1 = 3;
+            int CV_CHAIN_APPROX_NONE = 0;
+            int CV_RETR_EXTERNAL = 0;
+            Imgproc.findContours(edgesCV, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_TC89_L1);
+            MatOfInt hullCV = new MatOfInt();
+            if (!contours.isEmpty())
+                Imgproc.convexHull(contours.get(0), hullCV);
+            
+            MatOfPoint cnt = new MatOfPoint();
+            if(!contours.isEmpty()) {
+                cnt = contours.get(0);
+                Point[] points = cnt.toArray();
+                for (int i = 0; i < points.length; i++)
+                    konturCV.put((int) points[i].x, (int) points[i].y, 1);
+                }
+            
+            // wyswietlenie wyniku
+            ImageIcon iconEdges = new ImageIcon(Mat2BufferedImage(edgesCV));
+            labelEdges.setIcon(iconEdges);
+            ImageIcon iconContour = new ImageIcon(Mat2BufferedImage(hullCV));
+            labelContour.setIcon(iconContour);
+            
+            // przejście na standardową tablicę do obliczeń srodka ciężkości itd. (bez sensu i niewydajne)
+            for (int x = 0; x < chip.getSizeX(); x++)
+                for (int y = 0; y < chip.getSizeY(); y++)
+                    processedMap[x][y] = (int) mapCV.get(x, y)[0];
+            countSubRegion();
+            countCenter();
+        }
+    
         //second cycle for copying proper events
-        /*for(Object e:in) { 
+        for(Object e:in) { 
             BasicEvent i = (BasicEvent)e; 
             short x = (short)(i.x);
             short y = (short)(i.y);
-            
+
             //ignore special events, e.g. with negative address
             if(x > sx || y > sy || x < 0 || y < 0)
                 continue;
-            
+
             if(EnableNeighborsFiltering) {
-                if(sumNeighbors(x, y) >= threshold)
+                if(sumNeighbors(x, y) >= NeighborsThreshold)
                     outItr.nextOutput().copyFrom(i);
             }
             else
                 outItr.nextOutput().copyFrom(i);
-        }*/
+        }
+        
         return out;
     }
     
@@ -291,7 +441,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         gl.glPushMatrix();
         for (int y = 0; y < numY; y++) {
             for (int x = 0; x < numX; x++) {
-                if (EnableMarking) {
+                if (EnableAcornMarking) {
                     if(x == 0 || y == 0 || x == numX-1 || y == numY-1) {
                         if (isAcorn) {
                             gl.glColor4f(0, 1f, 0, 1f);
@@ -313,12 +463,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 if(EnableCenter) {
                     if (x == xCenter && y == yCenter) {
                         gl.glColor4f(1f, 0, 0, 1f);
-                        gl.glRectf(x, y, x+1f, y+1f);
-                    }
-                }
-                if(EnableCanny) {
-                    if (processedMap[x][y] > 0) {
-                        gl.glColor4f(1f, 1f, 1f, 1f);
                         gl.glRectf(x, y, x+1f, y+1f);
                     }
                 }
@@ -387,6 +531,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         return sum;
     }
     
+    // wyznacza prostokąt otaczający
     private void countSubRegion() {
         subXMin = subYMin = 0;
         subXMax = chip.getSizeX();
@@ -397,14 +542,13 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
             {
-                sum += eventMap[x][y];
-                if (!subXMinSet && sum >= 0.1 * eventSum) {
+                if (processedMap[x][y] > 0 && !subXMinSet)
+                {
                     subXMin = x;
                     subXMinSet = true;
                 }
-                else if (!subXMaxSet && sum >= 0.9 * eventSum) {
+                else if (processedMap[x][y] > 0) {
                     subXMax = x;
-                    subXMaxSet = true;
                 }
             }
         sum = 0;
@@ -412,155 +556,51 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         for (int y = 0; y < chip.getSizeY(); y++)
             for (int x = 0; x < chip.getSizeX(); x++)
             {
-                sum += eventMap[x][y];
-                if (!subYMinSet && sum >= 0.05 * eventSum) {
+                if (processedMap[x][y] > 0 && !subYMinSet)
+                {
                     subYMin = y;
                     subYMinSet = true;
                 }
-                else if (!subYMaxSet && sum >= 0.95 * eventSum) {
+                else if (processedMap[x][y] > 0) {
                     subYMax = y;
-                    subYMaxSet = true;
                 }
             }
     }
     
+    // wyznacza środek ciężkości z tablicy processedMap
     private void countCenter() {
         xCenterSum = yCenterSum = 0;
         xCenter = yCenter = 0;
+        long weight = 0;
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
             {
-                xCenterSum += x*eventMap[x][y];
-                yCenterSum += y*eventMap[x][y];
+                xCenterSum += x*processedMap[x][y];
+                yCenterSum += y*processedMap[x][y];
+                weight += processedMap[x][y];
             }
-        if(eventSum != 0) {
-            xCenter = (int) (xCenterSum / (long) eventSum);
-            yCenter = (int) (yCenterSum / (long) eventSum);
+        if(weight != 0) {
+            xCenter = (int) (xCenterSum / weight);
+            yCenter = (int) (yCenterSum / weight);
         }
     }
-    
-    private void convolution(int[][] input, int[][] output, int maskInd) {
-        int[][] mask;
-        switch (maskInd)
-        {
-            case 1:
-                mask = this.sobelMaskH;
-                break;
-            case 2:
-                mask = this.sobelMaskV;
-                break;
-            default:
-                mask = this.gaussMask;
-        }
         
-        for (int x = 1; x < chip.getSizeX()-1; x++)
-            for (int y = 1; y < chip.getSizeY()-1; y++)
-            {
-                output[x][y] = input[x-1][y-1]*mask[0][0];
-                output[x][y] += input[x-1][y]*mask[0][1];
-                output[x][y] += input[x-1][y+1]*mask[0][2];
-                output[x][y] += input[x][y-1]*mask[1][0];
-                output[x][y] += input[x][y]*mask[1][1];
-                output[x][y] += input[x][y+1]*mask[1][2];
-                output[x][y] += input[x+1][y-1]*mask[2][0];
-                output[x][y] += input[x+1][y]*mask[2][1];
-                output[x][y] += input[x+1][y+1]*mask[2][2];
-            }
-    }
-    
-    // canny edge detection algorithm
-    private void canny(int[][] input, int[][] output) {
-        int[][] gauss = new int[chip.getSizeX()][chip.getSizeY()];
-        int[][] sobelV = new int[chip.getSizeX()][chip.getSizeY()];
-        int[][] sobelH = new int[chip.getSizeX()][chip.getSizeY()];
-        int[][] edgeMap = new int[chip.getSizeX()][chip.getSizeY()];
-        double[][] gradient = new double[chip.getSizeX()][chip.getSizeY()];
-        int[][] direction = new int[chip.getSizeX()][chip.getSizeY()];
+private BufferedImage Mat2BufferedImage(Mat m){
+// source: http://answers.opencv.org/question/10344/opencv-java-load-image-to-gui/
+// Fastest code
+// The output can be assigned either to a BufferedImage or to an Image
 
-        // gaussian filter
-        this.convolution(input, gauss, 0);
-        // sobel operators
-        this.convolution(gauss, sobelH, 1);
-        this.convolution(gauss, sobelV, 2);
-        
-        // gradient and direction computing
-        // prevent from dividing by zero
-        double e = 0.0000001;
-        for (int x = 1; x < chip.getSizeX()-1; x++)
-            for (int y = 1; y < chip.getSizeY()-1; y++)
-            {
-                gradient[x][y] = Math.sqrt(sobelV[x][y]^2 + sobelH[x][y]^2);
-                direction[x][y] = 45 * (int) Math.round(Math.toDegrees(Math.atan(sobelV[x][y]/(sobelH[x][y]+e)))/45.0);
-            }
-        
-        // zerujemy gradienty nie będące maksymalne na kierunku prostopadłym do danego gradientu
-        for (int x = 1; x < chip.getSizeX()-1; x++)
-            for (int y = 1; y < chip.getSizeY()-1; y++)
-            {
-                switch (direction[x][y])
-                {
-                    case -180:
-                    case 0:
-                    case 180:
-                        gradient[x][y] = gradient[x][y] > gradient[x][y-1] && gradient[x][y] > gradient[x][y+1] ? gradient[x][y] : 0;
-                        break;
-                    case 45:
-                    case -135:
-                        gradient[x][y] = gradient[x][y] > gradient[x-1][y-1] && gradient[x][y] > gradient[x+1][y+1] ? gradient[x][y] : 0;
-                        break;
-                    case 135:
-                    case -45:
-                        gradient[x][y] = gradient[x][y] > gradient[x+1][y-1] && gradient[x][y] > gradient[x-1][y+1] ? gradient[x][y] : 0;
-                        break;
-                    default: // 90 v -90
-                        gradient[x][y] = gradient[x][y] > gradient[x-1][y] && gradient[x][y] > gradient[x+1][y] ? gradient[x][y] : 0;
-                }
-            }
-        
-        for (int x = 1; x < chip.getSizeX()-1; x++)
-            for (int y = 1; y < chip.getSizeY()-1; y++)
-            {
-                if (gradient[x][y] > this.CannyT2)
-                {
-                    travers(gradient, direction, edgeMap, x, y, 1);
-                    travers(gradient, direction, edgeMap, x, y, -1);
-                }
-            }
-        for (int x = 0; x < chip.getSizeX(); x++)
-            for (int y = 0; y < chip.getSizeY(); y++)
-            {
-                output[x][y] = edgeMap[x][y];
-            }
+    int type = BufferedImage.TYPE_BYTE_GRAY;
+    if ( m.channels() > 1 ) {
+        type = BufferedImage.TYPE_3BYTE_BGR;
     }
-    
-    // pomocnicza metoda do Canny
-    private void travers(double[][] gradient, int[][] direction, int[][] edgeMap, int x, int y, int side){
-        if (x == 0 || y == 0 || x == chip.getSizeX()-1 || y == chip.getSizeY()-1)
-            return;
-        
-        if (gradient[x][y] > this.CannyT1)
-            edgeMap[x][y] = 1;
-        else
-            return;
-        
-        // rekurencyjnie przechodzimy w kierunku gradientu do momentu aż gradient[x][y] <= CannyT1
-        switch (direction[x][y])
-        {
-            case -180:
-            case 0:
-            case 180:
-                travers(gradient, direction, edgeMap, x+side, y, side);
-                break;
-            case 45:
-            case -135:
-                travers(gradient, direction, edgeMap, x+side, y-side, side);
-                break;
-            case 135:
-            case -45:
-                travers(gradient, direction, edgeMap, x-side, y+side, side);
-                break;
-            default: // 90 v -90
-                travers(gradient, direction, edgeMap, x, y+side, side);
-        }
-    }
+    int bufferSize = m.channels()*m.cols()*m.rows();
+    byte [] b = new byte[bufferSize];
+    m.get(0,0,b); // get all the pixels
+    BufferedImage image = new BufferedImage(chip.getSizeX(), chip.getSizeY(), type);
+    final byte[] targetPixels = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
+    System.arraycopy(b, 0, targetPixels, 0, b.length);  
+    return image;
+
+}
 }
