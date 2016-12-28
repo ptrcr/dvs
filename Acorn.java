@@ -1,4 +1,3 @@
-//TODO: możliwość przywrócenia widoczności ukrytego okna z wynikami z poziomu okna sterowania filtra
 //TODO: jakieś opisy nad wyświetlanymi obrazami, co jest co
 //TODO:
 //TODO:
@@ -78,18 +77,18 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean isAcorn = false;
     private int[][] eventMap;
     private int[][] filteredMap;
-    private int eventSum;
     private int subXMin, subXMax, subYMin, subYMax;
     private int xCenter, yCenter;
     private long xCenterSum, yCenterSum;
-    private JLabel labelBinary;
+    private JLabel labelGray;
     private JLabel labelEllipse;
     private JFrame frame;
     private Mat mapCV;
     private Mat elipsa;
+    private Mat convexHull;
     private final int scallingRatio = 2;
     // ================================= GUI PARAMS =================================
-    private boolean WygaszanieEventow = getPrefs().getBoolean("Acorn.WygaszanieEventow", true);
+    private boolean EventsToning = getPrefs().getBoolean("Acorn.EventsToning", true);
     private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
     private boolean EnableCenter = getPrefs().getBoolean("Acorn.EnableCenter", true);
     private boolean EnableNeighborsFiltering = getPrefs().getBoolean("Acorn.EnableNeighborsFiltering", true);
@@ -97,14 +96,33 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean EnableAcornMarking = getPrefs().getBoolean("Acorn.EnableAcornMarking", true);
     private boolean AGHLogo = getPrefs().getBoolean("Acorn.AGHLogo", true);
     private boolean IgnoreMultipleNeighbors = getPrefs().getBoolean("Acorn.IgnoreMultipleNeighbors", true);
-
+    private boolean OnlyOnEvents = getPrefs().getBoolean("Acorn.OnlyOnEvents", false);
+    private boolean OnlyOffEvents = getPrefs().getBoolean("Acorn.OnlyOffEvents", false);
     
-    public boolean getWygaszanieEventow() {
-        return this.WygaszanieEventow;
+    public boolean getOnlyOnEvents() {
+        return this.OnlyOnEvents;
     }
-    public void setWygaszanieEventow(boolean enable) {
-        this.WygaszanieEventow = enable;
-        getPrefs().putBoolean("Acorn.WygaszanieEventow", enable);
+    public void setOnlyOnEvents(boolean enable) {
+        this.OnlyOnEvents = enable;
+        getPrefs().putBoolean("Acorn.OnlyOnEvents", enable);
+        if (enable && this.OnlyOffEvents)
+            this.setOnlyOffEvents(false);
+    }
+    public boolean getOnlyOffEvents() {
+        return this.OnlyOffEvents;
+    }
+    public void setOnlyOffEvents(boolean enable) {
+        this.OnlyOffEvents = enable;
+        getPrefs().putBoolean("Acorn.OnlyOffEvents", enable);
+        if (enable && this.OnlyOnEvents)
+            this.setOnlyOnEvents(false);
+    }
+    public boolean getEventsToning() {
+        return this.EventsToning;
+    }
+    public void setEventsToning(boolean enable) {
+        this.EventsToning = enable;
+        getPrefs().putBoolean("Acorn.EventsToning", enable);
     }
     public boolean getEnableSquare() {
         return this.EnableSquare;
@@ -177,7 +195,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 eventMap[x][y] = 0;
                 filteredMap[x][y] = 0;
             }
-        eventSum = 0;
     }
     
     public Acorn(AEChip chip) {
@@ -187,10 +204,10 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         resetFilter();
         
         // gropu's labels
-        final String nf = "Filtering", ann = "Displaying annotations", can = "Canny - edge detection";
+        final String nf = "Filtering", ann = "Displaying annotations", can = "Canny - edge detection", pol = "Events polarity";
 
         // tooltips
-        setPropertyTooltip("WygaszanieEventow", "Tworząc mapę eventów uwzględnia czas wystąpienia eventu - im starszy tym ma mniejszą wartość");
+        setPropertyTooltip("EventsToning", "Consider event timestamp when creating event map - the older event the lower value");
         setPropertyTooltip(ann, "EnableAcornMarking", "Set true to mark on display if acorn is found");
         setPropertyTooltip(ann, "AGHLogoEnabled", "Shows information about authors");
         setPropertyTooltip(ann, "MarkCenter", "Prints dot in the gravity center of events");
@@ -199,8 +216,11 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setPropertyTooltip(nf, "NeighborsFilteringEnabled", "Enables removing events which do not have enough neighbors");
         setPropertyTooltip(nf, "IgnoreMultipleNeighbors", "Ignore multiple events under the same address");
         setPropertyTooltip("ShowSteps", "Shows additional window with visualization of succeeding steps");
+        setPropertyTooltip(pol, "OnlyOnEvents", "Ignore off events");
+        setPropertyTooltip(pol, "OnlyOffEvents", "Ignore on events");
+        
         // initial values
-        setWygaszanieEventow(true);
+        setEventsToning(true);
         setAGHLogoEnabled(true);
         setEnableAcornMarking(true);
         setMarkCenter(true);
@@ -208,14 +228,16 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setNeighborsThreshold(5);
         setNeighborsFilteringEnabled(true);
         setIgnoreMultipleNeighbors(true);
+        setOnlyOnEvents(false);
+        setOnlyOffEvents(false);
         
         // nowe okno do wyświetlania wyników poszczególnych etapów
         frame = new JFrame();
         frame.setLayout(new FlowLayout());
-        frame.setSize(2*128+50, 2*128+50); //chip.getSizeX() nie działa (dlaczego?)
-        labelBinary = new JLabel();
+        frame.setSize(scallingRatio*2*128+50, scallingRatio*2*128+50); //chip.getSizeX() nie działa (dlaczego?)
+        labelGray = new JLabel();
         labelEllipse = new JLabel();
-        frame.add(labelBinary);
+        frame.add(labelGray);
         frame.add(labelEllipse);
         frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
     }
@@ -257,7 +279,12 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         // event to get timestamp, x and y
         float[][] initialMap = new float[chip.getSizeX()][chip.getSizeY()];
         for(Object e:in) { 
-            BasicEvent i = (BasicEvent)e; 
+            PolarityEvent i = (PolarityEvent) e;
+            if (i.polarity == PolarityEvent.Polarity.On && OnlyOffEvents)
+                continue;
+            if (i.polarity == PolarityEvent.Polarity.Off && OnlyOnEvents)
+                continue;
+            
             short x = (short)(i.x);
             short y = (short)(i.y);
             
@@ -265,8 +292,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             if(x > sx || y > sy || x < 0 || y < 0)
                 continue;
             
-            eventSum++;
-            if(!this.WygaszanieEventow)
+            if(!this.EventsToning)
                 initialMap[x][y] += 1;
             else
                 initialMap[x][y] += 1.0*(i.timestamp - minTS)/(maxTS - minTS);
@@ -304,13 +330,15 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         countCenter();
         
         // copy to openCV Mat type
-        mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
+        mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
-                mapCV.put(y, x, filteredMap[x][chip.getSizeY() - 1 - y]);
+            {
+                int val = filteredMap[x][chip.getSizeY() - 1 - y];
+                mapCV.put(y, x, val, val, val);
+            }
  
- 
-        elipsa = Mat.zeros(mapCV.size(), CvType.CV_8UC3);
+        // convert to list
         List<Point> pointList = new ArrayList<>();
         for (int i = 0; i < chip.getSizeX(); i++)
             for (int j = 0; j < chip.getSizeY(); j++)
@@ -319,28 +347,66 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                     Point p = new Point(i, j);
                     pointList.add(p);
                 }
-
+        
+        // convex Hull
+        // allocate memory, for future use
+        MatOfPoint2f matHull = new MatOfPoint2f();
+        MatOfPoint2f polyHull2f = new MatOfPoint2f();
+        List<MatOfPoint> polyHullList = new ArrayList<>();
+        List<Point> hullList = new ArrayList<>();
+        MatOfInt hull = new MatOfInt();
+        convexHull = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
+        // create MatOfPoint
+        MatOfPoint mapCVP = new MatOfPoint();
+        mapCVP.fromList(pointList);
+        // run convexHull algorithm and convert to array
+        /*Imgproc.convexHull(mapCVP, hull);
+        int[] hullArray = hull.toArray();
+        // create list with proper points (hull gives indexes of input list)
+        for (int i = 0; i < hullArray.length; i++)
+            hullList.add(pointList.get(hullArray[i]));
+        // create mat from list and approximate polygonal curve
+        matHull.fromList(hullList);
+        Imgproc.approxPolyDP(matHull, polyHull2f, 1, true);
+        Point[] hullPoints = polyHull2f.toArray();
+        MatOfPoint points = new MatOfPoint();
+        points.fromArray(hullPoints);
+        polyHullList.add(points);
+        Scalar color = new Scalar(240, 40, 40);
+        Imgproc.polylines(mapCV, polyHullList, true, color);
+        //for (int i = 0; i < hullPoints.length; i++)
+          //  mapCV.put(hullPoints[i].x, hullPoints[i].y, color);
+        */
+        
+        // ellipse
+        elipsa = Mat.zeros(mapCV.size(), CvType.CV_8UC3);       
         MatOfPoint2f mapCV2f = new MatOfPoint2f();
         mapCV2f.fromList(pointList);
-        //pointList = mapCV.
+        // pointList = mapCV.
         RotatedRect rect = new RotatedRect();
         if (pointList.size() >= 5)
             rect = Imgproc.fitEllipse(mapCV2f);
-
-        //Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
+        
+        // Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
         Imgproc.ellipse(elipsa, rect, new Scalar(255, 30, 30));
 
-        //wyswietl poszczegolne kroki w osobnym okienku
+        // wyswietl poszczegolne kroki w osobnym okienku
         if(frame.isVisible())
             Visualize();
         
-        //second cycle for copying proper events to output packet
+        // second cycle for copying proper events to output packet
         for(Object e:in) { 
-            BasicEvent i = (BasicEvent)e; 
+            //BasicEvent i = (BasicEvent)e;
+            PolarityEvent i = (PolarityEvent) e;
+            if (i.polarity == PolarityEvent.Polarity.On && OnlyOffEvents)
+                continue;
+            if (i.polarity == PolarityEvent.Polarity.Off && OnlyOnEvents)
+                continue;
+            
             short x = (short)(i.x);
             short y = (short)(i.y);
 
-            //ignore special events, e.g. with negative address
+            // ignore special events, e.g. with negative address
             if(x > sx || y > sy || x < 0 || y < 0)
                 continue;
 
@@ -538,7 +604,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             Imgproc.resize(elipsa, elipsaL, sz);
             
             ImageIcon iconEdges = new ImageIcon(Mat2BufferedImage(mapCVL));
-            labelBinary.setIcon(iconEdges);
+            labelGray.setIcon(iconEdges);
             ImageIcon iconEllipse = new ImageIcon(Mat2BufferedImage(elipsaL));
             labelEllipse.setIcon(iconEllipse);
     }
