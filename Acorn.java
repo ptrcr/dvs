@@ -37,6 +37,7 @@ import net.sf.jaer.Description;
 import net.sf.jaer.DevelopmentStatus;
 import net.sf.jaer.chip.AEChip;
 import net.sf.jaer.event.BasicEvent;
+import net.sf.jaer.event.PolarityEvent;
 import net.sf.jaer.event.EventPacket;
 import net.sf.jaer.event.OutputEventIterator;
 import net.sf.jaer.eventprocessing.EventFilter2D;
@@ -76,22 +77,18 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     
     private boolean isAcorn = false;
     private int[][] eventMap;
-    private int[][] processedMap;
+    private int[][] filteredMap;
     private int eventSum;
     private int subXMin, subXMax, subYMin, subYMax;
     private int xCenter, yCenter;
     private long xCenterSum, yCenterSum;
-    private int[][] sobel;
-    private final int[][] sobelMaskH = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
-    private final int[][] sobelMaskV = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
-    private final int[][] gaussMask = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}};
-    private JLabel labelEdges;
-    private JLabel labelContour;
+    private JLabel labelBinary;
     private JLabel labelEllipse;
     private JFrame frame;
-
+    private Mat mapCV;
+    private Mat elipsa;
+    private final int scallingRatio = 2;
     // ================================= GUI PARAMS =================================
-    private boolean EnableContour = getPrefs().getBoolean("Acorn.Contour", true);
     private boolean WygaszanieEventow = getPrefs().getBoolean("Acorn.WygaszanieEventow", true);
     private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
     private boolean EnableCenter = getPrefs().getBoolean("Acorn.EnableCenter", true);
@@ -100,65 +97,14 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean EnableAcornMarking = getPrefs().getBoolean("Acorn.EnableAcornMarking", true);
     private boolean AGHLogo = getPrefs().getBoolean("Acorn.AGHLogo", true);
     private boolean IgnoreMultipleNeighbors = getPrefs().getBoolean("Acorn.IgnoreMultipleNeighbors", true);
-    private boolean EnableCanny = getPrefs().getBoolean("Acorn.EnableCanny", true);
-    private float CannyT1 = getPrefs().getFloat("Acorn.CannyT1", 0);
-    private float CannyT2 = getPrefs().getFloat("Acorn.CannyT2", 0);
+
     
-    public boolean getEnableContour() {
-        return this.EnableContour;
-    }
-    public void setEnableContour(boolean enable) {
-        if (EnableCanny) {
-            this.EnableContour = enable;
-            getPrefs().putBoolean("Acorn.EnableContour", enable);
-        }
-        else if (enable)
-            JOptionPane.showMessageDialog(new JFrame("Error"), "Potrzebne Canny!");
-    }
-    public boolean getEnableCanny() {
-        return this.EnableCanny;
-    }
-    public void setEnableCanny(boolean enable) {
-        this.EnableCanny = enable;
-        getPrefs().putBoolean("Acorn.EnableCanny", enable);
-        if (!enable)
-            setEnableContour(enable);
-    }
     public boolean getWygaszanieEventow() {
         return this.WygaszanieEventow;
     }
     public void setWygaszanieEventow(boolean enable) {
         this.WygaszanieEventow = enable;
         getPrefs().putBoolean("Acorn.WygaszanieEventow", enable);
-    }
-    public float getCannyT1() {
-        return this.CannyT1;
-    }
-    public void setCannyT1(float val) {
-        if (val < this.CannyT2)
-        {
-            this.CannyT1 = val;
-            getPrefs().putFloat("Acorn.CannyT1", val);
-        }
-        else
-        {
-            JOptionPane.showMessageDialog(new JFrame("Error"), "CannyT1 threshold must be smaller than CannyT2!");
-            getPrefs().putFloat("Acorn.CannyT1", this.CannyT1);
-        }
-    }
-    public float getCannyT2() {
-        return this.CannyT2;
-    }
-    public void setCannyT2(float val) {
-        if (val > this.CannyT1)
-        {
-            this.CannyT2 = val;
-            getPrefs().putFloat("Acorn.CannyT2", val);
-        }
-        else
-        {
-            getPrefs().putFloat("Acorn.CannyT2", this.CannyT2);
-        }
     }
     public boolean getEnableSquare() {
         return this.EnableSquare;
@@ -209,14 +155,17 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         this.EnableAcornMarking = markingEnabled;
         getPrefs().putBoolean("Info.AGHLogo", markingEnabled);
     }
+    public void doShowSteps() {
+        frame.setVisible(!frame.isVisible());
+    }
     // =============================== END GUI PARAMS =================================
     
     // method which allocates memory for arrays
     private void initMaps() {
         if (eventMap == null)
             eventMap = new int[getChip().getSizeX()][getChip().getSizeX()];
-        if (processedMap == null)
-            processedMap = new int[chip.getSizeX()][chip.getSizeY()];
+        if (filteredMap == null)
+            filteredMap = new int[chip.getSizeX()][chip.getSizeY()];
     }
     
     // method which fills maps with zeros
@@ -226,7 +175,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             for (int y = 0; y < getChip().getSizeY(); y++)
             {
                 eventMap[x][y] = 0;
-                processedMap[x][y] = 0;
+                filteredMap[x][y] = 0;
             }
         eventSum = 0;
     }
@@ -238,7 +187,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         resetFilter();
         
         // gropu's labels
-        final String nf = "Neighbors filtering", ann = "Displaying annotations", can = "Canny - edge detection";
+        final String nf = "Filtering", ann = "Displaying annotations", can = "Canny - edge detection";
 
         // tooltips
         setPropertyTooltip("WygaszanieEventow", "Tworząc mapę eventów uwzględnia czas wystąpienia eventu - im starszy tym ma mniejszą wartość");
@@ -249,11 +198,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setPropertyTooltip(nf, "NeighborsThreshold", "Sets the threshold for noise filtering");
         setPropertyTooltip(nf, "NeighborsFilteringEnabled", "Enables removing events which do not have enough neighbors");
         setPropertyTooltip(nf, "IgnoreMultipleNeighbors", "Ignore multiple events under the same address");
-        setPropertyTooltip(can, "EnableCanny", "Enables Cany edge detection algorithm");
-        setPropertyTooltip(can, "CannyT1", "Canny filter - threshold T1");
-        setPropertyTooltip(can, "CannyT2", "Canny filter - threshold T2");
-        setPropertyTooltip("EnableContour", "Zaznacza kontur wykrytego obiektu");
-        
+        setPropertyTooltip("ShowSteps", "Shows additional window with visualization of succeeding steps");
         // initial values
         setWygaszanieEventow(true);
         setAGHLogoEnabled(true);
@@ -263,22 +208,15 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setNeighborsThreshold(5);
         setNeighborsFilteringEnabled(true);
         setIgnoreMultipleNeighbors(true);
-        setEnableCanny(true);
-        setCannyT2((float) 2.0);
-        setCannyT1((float) 0.3);
-        setEnableContour(true);
         
         // nowe okno do wyświetlania wyników poszczególnych etapów
         frame = new JFrame();
         frame.setLayout(new FlowLayout());
         frame.setSize(2*128+50, 2*128+50); //chip.getSizeX() nie działa (dlaczego?)
-        labelEdges = new JLabel();
-        labelContour = new JLabel();
+        labelBinary = new JLabel();
         labelEllipse = new JLabel();
-        frame.add(labelEdges);
-        frame.add(labelContour);
+        frame.add(labelBinary);
         frame.add(labelEllipse);
-        frame.setVisible(true);
         frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
     }
     
@@ -305,7 +243,10 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         int minTS = 2^31-1;
         int maxTS = 0;
         for(Object e:in) {
-            BasicEvent i = (BasicEvent)e; 
+            //BasicEvent i = (BasicEvent)e; 
+            PolarityEvent i = (PolarityEvent)e;
+            if (i.type == 1)
+                continue;
             if (i.timestamp < minTS)
                 minTS = i.timestamp;
             else if (i.timestamp > maxTS)
@@ -354,79 +295,46 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 if(EnableNeighborsFiltering)
                 {
                     if (sumNeighbors((short) x, (short) y) >= this.NeighborsThreshold)
-                        this.processedMap[x][y] = this.eventMap[x][y];
+                        this.filteredMap[x][y] = this.eventMap[x][y];
                 }
                 else
-                    this.processedMap[x][y] = this.eventMap[x][y];
+                    this.filteredMap[x][y] = this.eventMap[x][y];
         
-        // wyznacz środek ciężkości jeżeli nie będzie wyznaczany później
-        if (!EnableCanny) {
-            countSubRegion();
-            countCenter();
-        }
-
+        countSubRegion();
+        countCenter();
+        
         // copy to openCV Mat type
-        Mat mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
+        mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
-                mapCV.put(x, y, processedMap[x][y]);
+                mapCV.put(y, x, filteredMap[x][chip.getSizeY() - 1 - y]);
  
-        if (EnableCanny) {
-            Mat konturCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_32F);
-            Mat edgesCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_32F);
-            // wykrywanie krawędzi
-            Imgproc.Canny(mapCV, edgesCV, CannyT1, CannyT2);
+ 
+        elipsa = Mat.zeros(mapCV.size(), CvType.CV_8UC3);
+        List<Point> pointList = new ArrayList<>();
+        for (int i = 0; i < chip.getSizeX(); i++)
+            for (int j = 0; j < chip.getSizeY(); j++)
+                if ( mapCV.get(i, j)[0] > 0)
+                {
+                    Point p = new Point(i, j);
+                    pointList.add(p);
+                }
 
-            // kontur
-            List<MatOfPoint> contours = new ArrayList<>();
-            Mat hierarchy = new Mat();
-            // constans from sj.opencv.Constants (nie zainstalowane)
-            int CV_CHAIN_APPROX_TC89_L1 = 3;
-            int CV_CHAIN_APPROX_NONE = 0;
-            int CV_RETR_EXTERNAL = 0;
-            Imgproc.findContours(edgesCV, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_TC89_L1);
-            Mat kontury = Mat.zeros(edgesCV.size(), CvType.CV_8UC3);
-            Mat comboContourMat = Mat.zeros(edgesCV.size(), CvType.CV_8UC3);
-            Mat elipsa = Mat.zeros(edgesCV.size(), CvType.CV_8UC3);
-            Random rng = new Random();
-            List<Point> pointList = new ArrayList<>();
-            for (int i = 0; i < contours.size(); i++){
-                Scalar color = new Scalar(rng.nextInt()%255, rng.nextInt()%255, rng.nextInt()%255);
-                Imgproc.drawContours(kontury, contours, i, color);
-                pointList.addAll(contours.get(i).toList());
-            }
-            
-            // kontur zawierający wszystkie znalezione kontury
-            List<MatOfPoint> comboContourList = new ArrayList<>();
-            MatOfPoint comboContour = new MatOfPoint();
-            comboContour.fromList(pointList);
-            comboContourList.add(comboContour);
-            
-            MatOfPoint2f comboContour2f = new MatOfPoint2f();
-            comboContour2f.fromList(pointList);
-            
-            RotatedRect rect = new RotatedRect();
-            if (!pointList.isEmpty())
-                rect = Imgproc.fitEllipse(comboContour2f);
-            
-            //Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
-            Imgproc.ellipse(elipsa, rect, new Scalar(255, 30, 30));
-            
-            
-            // wyswietlenie wyniku
-            ImageIcon iconEdges = new ImageIcon(Mat2BufferedImage(edgesCV));
-            labelEdges.setIcon(iconEdges);
-            ImageIcon iconContour = new ImageIcon(Mat2BufferedImage(kontury));
-            labelContour.setIcon(iconContour);
-            ImageIcon iconEllipse = new ImageIcon(Mat2BufferedImage(elipsa));
-            labelEllipse.setIcon(iconEllipse);
+        MatOfPoint2f mapCV2f = new MatOfPoint2f();
+        mapCV2f.fromList(pointList);
+        //pointList = mapCV.
+        RotatedRect rect = new RotatedRect();
+        if (pointList.size() >= 5)
+            rect = Imgproc.fitEllipse(mapCV2f);
 
-            
-            countSubRegion();
-            countCenter();
-        }
-    
-        //second cycle for copying proper events
+        //Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
+        Imgproc.ellipse(elipsa, rect, new Scalar(255, 30, 30));
+
+        //wyswietl poszczegolne kroki w osobnym okienku
+        if(frame.isVisible())
+            Visualize();
+        
+        //second cycle for copying proper events to output packet
         for(Object e:in) { 
             BasicEvent i = (BasicEvent)e; 
             short x = (short)(i.x);
@@ -557,12 +465,12 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
             {
-                if (processedMap[x][y] > 0 && !subXMinSet)
+                if (filteredMap[x][y] > 0 && !subXMinSet)
                 {
                     subXMin = x;
                     subXMinSet = true;
                 }
-                else if (processedMap[x][y] > 0) {
+                else if (filteredMap[x][y] > 0) {
                     subXMax = x;
                 }
             }
@@ -571,12 +479,12 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         for (int y = 0; y < chip.getSizeY(); y++)
             for (int x = 0; x < chip.getSizeX(); x++)
             {
-                if (processedMap[x][y] > 0 && !subYMinSet)
+                if (filteredMap[x][y] > 0 && !subYMinSet)
                 {
                     subYMin = y;
                     subYMinSet = true;
                 }
-                else if (processedMap[x][y] > 0) {
+                else if (filteredMap[x][y] > 0) {
                     subYMax = y;
                 }
             }
@@ -590,9 +498,9 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
             {
-                xCenterSum += x*processedMap[x][y];
-                yCenterSum += y*processedMap[x][y];
-                weight += processedMap[x][y];
+                xCenterSum += x*filteredMap[x][y];
+                yCenterSum += y*filteredMap[x][y];
+                weight += filteredMap[x][y];
             }
         if(weight != 0) {
             xCenter = (int) (xCenterSum / weight);
@@ -612,10 +520,27 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         int bufferSize = m.channels()*m.cols()*m.rows();
         byte [] b = new byte[bufferSize];
         m.get(0,0,b); // get all the pixels
-        BufferedImage image = new BufferedImage(chip.getSizeX(), chip.getSizeY(), type);
+        BufferedImage image = new BufferedImage(scallingRatio*chip.getSizeX(), scallingRatio*chip.getSizeY(), type);
         final byte[] targetPixels = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
         System.arraycopy(b, 0, targetPixels, 0, b.length);  
         return image;
 
     }
+
+    private void Visualize() {
+            //skalowanie
+            Size sz = new Size(scallingRatio*chip.getSizeX(), scallingRatio*chip.getSizeY());
+            
+            Mat mapCVL = new Mat();
+            Mat elipsaL = new Mat();
+            
+            Imgproc.resize(mapCV, mapCVL, sz);
+            Imgproc.resize(elipsa, elipsaL, sz);
+            
+            ImageIcon iconEdges = new ImageIcon(Mat2BufferedImage(mapCVL));
+            labelBinary.setIcon(iconEdges);
+            ImageIcon iconEllipse = new ImageIcon(Mat2BufferedImage(elipsaL));
+            labelEllipse.setIcon(iconEllipse);
+    }
+
 }
