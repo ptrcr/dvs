@@ -52,11 +52,13 @@ import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
+import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.MatOfInt;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.core.Size;
 import org.opencv.core.Scalar;
 import org.opencv.core.Point;
+import org.opencv.core.RotatedRect;
 import java.util.List;
 import java.util.ArrayList;
 import java.awt.FlowLayout;
@@ -64,6 +66,7 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import javax.swing.JLabel;
 import javax.swing.ImageIcon;
+import java.util.Random;
 
 @Description("Finds acorn in incoming events.")
 @DevelopmentStatus(DevelopmentStatus.Status.Experimental)
@@ -82,10 +85,9 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private final int[][] sobelMaskH = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
     private final int[][] sobelMaskV = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
     private final int[][] gaussMask = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}};
-    private Mat konturCV;
-    private Mat edgesCV;
     private JLabel labelEdges;
     private JLabel labelContour;
+    private JLabel labelEllipse;
     private JFrame frame;
 
     // ================================= GUI PARAMS =================================
@@ -211,10 +213,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     
     // method which allocates memory for arrays
     private void initMaps() {
-        if (edgesCV == null)
-            edgesCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_32F);
-        if (konturCV == null)
-            konturCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
         if (eventMap == null)
             eventMap = new int[getChip().getSizeX()][getChip().getSizeX()];
         if (processedMap == null)
@@ -229,8 +227,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             {
                 eventMap[x][y] = 0;
                 processedMap[x][y] = 0;
-                konturCV.put(x, y, 0);
-                edgesCV.put(x, y, 0);
             }
         eventSum = 0;
     }
@@ -278,8 +274,10 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         frame.setSize(2*128+50, 2*128+50); //chip.getSizeX() nie działa (dlaczego?)
         labelEdges = new JLabel();
         labelContour = new JLabel();
+        labelEllipse = new JLabel();
         frame.add(labelEdges);
         frame.add(labelContour);
+        frame.add(labelEllipse);
         frame.setVisible(true);
         frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
     }
@@ -374,6 +372,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 mapCV.put(x, y, processedMap[x][y]);
  
         if (EnableCanny) {
+            Mat konturCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_32F);
+            Mat edgesCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_32F);
             // wykrywanie krawędzi
             Imgproc.Canny(mapCV, edgesCV, CannyT1, CannyT2);
 
@@ -385,28 +385,43 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             int CV_CHAIN_APPROX_NONE = 0;
             int CV_RETR_EXTERNAL = 0;
             Imgproc.findContours(edgesCV, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_TC89_L1);
-            MatOfInt hullCV = new MatOfInt();
-            if (!contours.isEmpty())
-                Imgproc.convexHull(contours.get(0), hullCV);
+            Mat kontury = Mat.zeros(edgesCV.size(), CvType.CV_8UC3);
+            Mat comboContourMat = Mat.zeros(edgesCV.size(), CvType.CV_8UC3);
+            Mat elipsa = Mat.zeros(edgesCV.size(), CvType.CV_8UC3);
+            Random rng = new Random();
+            List<Point> pointList = new ArrayList<>();
+            for (int i = 0; i < contours.size(); i++){
+                Scalar color = new Scalar(rng.nextInt()%255, rng.nextInt()%255, rng.nextInt()%255);
+                Imgproc.drawContours(kontury, contours, i, color);
+                pointList.addAll(contours.get(i).toList());
+            }
             
-            MatOfPoint cnt = new MatOfPoint();
-            if(!contours.isEmpty()) {
-                cnt = contours.get(0);
-                Point[] points = cnt.toArray();
-                for (int i = 0; i < points.length; i++)
-                    konturCV.put((int) points[i].x, (int) points[i].y, 1);
-                }
+            // kontur zawierający wszystkie znalezione kontury
+            List<MatOfPoint> comboContourList = new ArrayList<>();
+            MatOfPoint comboContour = new MatOfPoint();
+            comboContour.fromList(pointList);
+            comboContourList.add(comboContour);
+            
+            MatOfPoint2f comboContour2f = new MatOfPoint2f();
+            comboContour2f.fromList(pointList);
+            
+            RotatedRect rect = new RotatedRect();
+            if (!pointList.isEmpty())
+                rect = Imgproc.fitEllipse(comboContour2f);
+            
+            //Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
+            Imgproc.ellipse(elipsa, rect, new Scalar(255, 30, 30));
+            
             
             // wyswietlenie wyniku
             ImageIcon iconEdges = new ImageIcon(Mat2BufferedImage(edgesCV));
             labelEdges.setIcon(iconEdges);
-            ImageIcon iconContour = new ImageIcon(Mat2BufferedImage(hullCV));
+            ImageIcon iconContour = new ImageIcon(Mat2BufferedImage(kontury));
             labelContour.setIcon(iconContour);
+            ImageIcon iconEllipse = new ImageIcon(Mat2BufferedImage(elipsa));
+            labelEllipse.setIcon(iconEllipse);
+
             
-            // przejście na standardową tablicę do obliczeń srodka ciężkości itd. (bez sensu i niewydajne)
-            for (int x = 0; x < chip.getSizeX(); x++)
-                for (int y = 0; y < chip.getSizeY(); y++)
-                    processedMap[x][y] = (int) mapCV.get(x, y)[0];
             countSubRegion();
             countCenter();
         }
@@ -585,22 +600,22 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         }
     }
         
-private BufferedImage Mat2BufferedImage(Mat m){
-// source: http://answers.opencv.org/question/10344/opencv-java-load-image-to-gui/
-// Fastest code
-// The output can be assigned either to a BufferedImage or to an Image
+    private BufferedImage Mat2BufferedImage(Mat m){
+    // source: http://answers.opencv.org/question/10344/opencv-java-load-image-to-gui/
+    // Fastest code
+    // The output can be assigned either to a BufferedImage or to an Image
 
-    int type = BufferedImage.TYPE_BYTE_GRAY;
-    if ( m.channels() > 1 ) {
-        type = BufferedImage.TYPE_3BYTE_BGR;
+        int type = BufferedImage.TYPE_BYTE_GRAY;
+        if ( m.channels() > 1 ) {
+            type = BufferedImage.TYPE_3BYTE_BGR;
+        }
+        int bufferSize = m.channels()*m.cols()*m.rows();
+        byte [] b = new byte[bufferSize];
+        m.get(0,0,b); // get all the pixels
+        BufferedImage image = new BufferedImage(chip.getSizeX(), chip.getSizeY(), type);
+        final byte[] targetPixels = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
+        System.arraycopy(b, 0, targetPixels, 0, b.length);  
+        return image;
+
     }
-    int bufferSize = m.channels()*m.cols()*m.rows();
-    byte [] b = new byte[bufferSize];
-    m.get(0,0,b); // get all the pixels
-    BufferedImage image = new BufferedImage(chip.getSizeX(), chip.getSizeY(), type);
-    final byte[] targetPixels = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
-    System.arraycopy(b, 0, targetPixels, 0, b.length);  
-    return image;
-
-}
 }
