@@ -56,6 +56,7 @@ import java.awt.image.DataBufferByte;
 import javax.swing.JLabel;
 import javax.swing.ImageIcon;
 import java.util.Random;
+import org.opencv.imgproc.Moments;
 
 @Description("Finds acorn in incoming events.")
 @DevelopmentStatus(DevelopmentStatus.Status.Experimental)
@@ -67,8 +68,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private int[][] eventMap;
     private int[][] filteredMap;
     private int subXMin, subXMax, subYMin, subYMax;
-    private int xCenter, yCenter;
-    private long xCenterSum, yCenterSum;
     private JLabel labelGray;
     private JLabel labelEllipse;
     private JLabel labelHull;
@@ -278,7 +277,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 maxTS = i.timestamp;
         }
         
-        // iterate over the inpu packet, cast the object to basic
+        // iterate over the inpu packet, cast the object to polarity
         // event to get timestamp, x and y
         float[][] initialMap = new float[chip.getSizeX()][chip.getSizeY()];
         for(Object e:in) { 
@@ -328,9 +327,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                 }
                 else
                     this.filteredMap[x][y] = this.eventMap[x][y];
-        
-        countSubRegion();
-        countCenter();
         
         // copy to openCV Mat type
         mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
@@ -386,6 +382,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             Imgproc.polylines(convexHull, polyHullList, true, color);
             // Compute paramters
             convexHullArea = Imgproc.contourArea(points);
+            Moments hullMoments = Imgproc2.contourMoments(points);
         }
         
         // ellipse
@@ -426,7 +423,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         
         // wyswietl poszczegolne kroki w osobnym okienku
         if(frame.isVisible())
-            Visualize();
+            visualize();
         
         // second cycle for copying proper events to output packet
         for(Object e:in) { 
@@ -474,19 +471,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                             gl.glColor4f(1f, 0, 0, 1f);
                             gl.glRectf(x, y, x+1f, y+1f);
                         }
-                    }
-                }
-                if(EnableSquare) {
-                    if((x == subXMin || x == subXMax) && y >= subYMin && y <= subYMax
-                    || (y == subYMin  || y == subYMax) && x >= subXMin && x <= subXMax) {
-                        gl.glColor4f(0, 0, 1f, 1f);
-                        gl.glRectf(x, y, x+1f, y+1f);
-                    }
-                }
-                if(EnableCenter) {
-                    if (x == xCenter && y == yCenter) {
-                        gl.glColor4f(1f, 0, 0, 1f);
-                        gl.glRectf(x, y, x+1f, y+1f);
                     }
                 }
             }
@@ -589,60 +573,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         return sum;
     }
     
-    // wyznacza prostokąt otaczający
-    private void countSubRegion() {
-        subXMin = subYMin = 0;
-        subXMax = chip.getSizeX();
-        subYMax = chip.getSizeY();
-        int sum = 0;
-        boolean subXMinSet = false, subXMaxSet = false, subYMinSet = false, subYMaxSet = false;
-        //x limits
-        for (int x = 0; x < chip.getSizeX(); x++)
-            for (int y = 0; y < chip.getSizeY(); y++)
-            {
-                if (filteredMap[x][y] > 0 && !subXMinSet)
-                {
-                    subXMin = x;
-                    subXMinSet = true;
-                }
-                else if (filteredMap[x][y] > 0) {
-                    subXMax = x;
-                }
-            }
-        sum = 0;
-        //ylimits
-        for (int y = 0; y < chip.getSizeY(); y++)
-            for (int x = 0; x < chip.getSizeX(); x++)
-            {
-                if (filteredMap[x][y] > 0 && !subYMinSet)
-                {
-                    subYMin = y;
-                    subYMinSet = true;
-                }
-                else if (filteredMap[x][y] > 0) {
-                    subYMax = y;
-                }
-            }
-    }
-    
-    // wyznacza środek ciężkości z tablicy processedMap
-    private void countCenter() {
-        xCenterSum = yCenterSum = 0;
-        xCenter = yCenter = 0;
-        long weight = 0;
-        for (int x = 0; x < chip.getSizeX(); x++)
-            for (int y = 0; y < chip.getSizeY(); y++)
-            {
-                xCenterSum += x*filteredMap[x][y];
-                yCenterSum += y*filteredMap[x][y];
-                weight += filteredMap[x][y];
-            }
-        if(weight != 0) {
-            xCenter = (int) (xCenterSum / weight);
-            yCenter = (int) (yCenterSum / weight);
-        }
-    }
-        
     private BufferedImage Mat2BufferedImage(Mat m){
     // source: http://answers.opencv.org/question/10344/opencv-java-load-image-to-gui/
     // Fastest code
@@ -662,7 +592,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
 
     }
 
-    private void Visualize() {
+    private void visualize() {
             //skalowanie
             Size sz = new Size(scallingRatio*chip.getSizeX(), scallingRatio*chip.getSizeY());
             
@@ -681,4 +611,5 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             ImageIcon iconHull = new ImageIcon(Mat2BufferedImage(convexHullL));
             labelHull.setIcon(iconHull);
     }
+    
 }
