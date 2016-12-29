@@ -77,6 +77,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private Mat ellipse;
     private Mat convexHull;
     private final int scallingRatio = 2;
+    private double ellipseArea = 0;
+    private double convexHullArea = 0;
     // ================================= GUI PARAMS =================================
     private boolean EventsToning = getPrefs().getBoolean("Acorn.EventsToning", true);
     private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
@@ -349,7 +351,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         List<Point> pointList = new ArrayList<>();
         for (int i = 0; i < chip.getSizeX(); i++)
             for (int j = 0; j < chip.getSizeY(); j++)
-                if ( mapCVR.get(i, j)[0] > 0)
+                if (mapCVR.get(i, j)[0] > 0)
                 {
                     Point p = new Point(i, j);
                     pointList.add(p);
@@ -382,6 +384,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             polyHullList.add(points);
             Scalar color = new Scalar(30, 255, 30);
             Imgproc.polylines(convexHull, polyHullList, true, color);
+            // Compute paramters
+            convexHullArea = Imgproc.contourArea(points);
         }
         
         // ellipse
@@ -394,7 +398,32 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         
         // Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
         Imgproc.ellipse(ellipse, rect, new Scalar(255, 30, 30));
+        // convert to list
+        List<Point> ellipsePointList = new ArrayList<>();
+        for (int i = 0; i < chip.getSizeX(); i++)
+            for (int j = 0; j < chip.getSizeY(); j++)
+                if (ellipse.get(i, j)[0] > 0)
+                {
+                    Point p = new Point(i, j);
+                    ellipsePointList.add(p);
+                }
+        // convert to MatOfPoint
+        MatOfPoint ellipseMatOfPoint = new MatOfPoint();
+        ellipseMatOfPoint.fromList(ellipsePointList);
+        // Compute parameters
+        ellipseArea = Imgproc.contourArea(ellipseMatOfPoint);
 
+        // copy image to elipse and convex hull
+        for (int x = 0; x < chip.getSizeX(); x++)
+            for (int y = 0; y < chip.getSizeY(); y++)
+            {
+                int val = filteredMap[x][chip.getSizeY() - 1 - y];
+                if (ellipse.get(y, x)[0] == 0)
+                    ellipse.put(y, x, val, val, val);
+                if (convexHull.get(y, x)[0] == 0)
+                    convexHull.put(y, x, val, val, val);
+            }
+        
         // wyswietl poszczegolne kroki w osobnym okienku
         if(frame.isVisible())
             Visualize();
@@ -464,8 +493,10 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         }
         gl.glPopMatrix();
 
-        //draws AGH logo if it is enabled
+        // draws AGH logo if it is enabled
         drawLogo(drawable);
+        // draws info about object
+        drawInfo(drawable);
     }
     
     @Override
@@ -484,13 +515,12 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         return getChip().getRenderer();
     }
     
-    //method draws AGH logo
+    // method draws AGH logo
     private void drawLogo(GLAutoDrawable drawable) {
         if (!getAGHLogoEnabled()) {
             return;
         }
         GL2 gl = drawable.getGL().getGL2();
-        // positioning of rate bars depends on num types and display size
         ChipCanvas.Borders borders = chip.getCanvas().getBorders();
 
         // get screen width in screen pixels, subtract borders in screen pixels to find width of drawn chip area in screen pixels
@@ -512,7 +542,41 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         gl.glPopMatrix();
     }
     
-    //foreach cell counts it's neighbors
+    // method draws information about object in the image
+    private void drawInfo(GLAutoDrawable drawable) {
+        GL2 gl = drawable.getGL().getGL2();
+        ChipCanvas.Borders borders = chip.getCanvas().getBorders();
+
+        // get screen width in screen pixels, subtract borders in screen pixels to find width of drawn chip area in screen pixels
+        float /*h = drawable.getHeight(), */ w = drawable.getSurfaceWidth() - (2 * borders.leftRight * chip.getCanvas().getScale());
+        final int sx = chip.getSizeX(), sy = chip.getSizeY();
+        float ypos;
+        final float xpos = 1.05f * sx;
+        
+        gl.glPushMatrix();
+        gl.glColor4f(0.5f, 0.1f, 0.5f, 1f);
+        int font = GLUT.BITMAP_9_BY_15;
+        GLUT glut = chip.getCanvas().getGlut();
+        String[] lines = {
+            "ELIPSA",
+            "powierzchnia: " + Double.toString(ellipseArea),
+            "",
+            "KONTUR",
+            "powierzchnia: " + Double.toString(convexHullArea)
+        };
+        // get the string length in screen pixels , divide by chip array in screen pixels,
+        // and multiply by number of pixels to get string length in screen pixels.
+        for (int i = 0; i < lines.length; i++)
+        {
+            float sw = (glut.glutBitmapLength(font, lines[i]) / w) * sx;
+            ypos = (.95f - .04f*i) * sy;
+            gl.glRasterPos3f(xpos, ypos, 0);
+            glut.glutBitmapString(font, lines[i]);
+            gl.glPopMatrix();
+        }
+    }
+    
+    // foreach cell counts it's neighbors
     private int sumNeighbors(short x, short y) {
         int sum = 0;
         for (int i = x-1; i <= x+1; i++)
@@ -617,5 +681,4 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             ImageIcon iconHull = new ImageIcon(Mat2BufferedImage(convexHullL));
             labelHull.setIcon(iconHull);
     }
-
 }
