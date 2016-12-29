@@ -56,7 +56,6 @@ import java.awt.image.DataBufferByte;
 import javax.swing.JLabel;
 import javax.swing.ImageIcon;
 import java.util.Random;
-import org.opencv.imgproc.Moments;
 
 @Description("Finds acorn in incoming events.")
 @DevelopmentStatus(DevelopmentStatus.Status.Experimental)
@@ -78,6 +77,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private final int scallingRatio = 2;
     private double ellipseArea = 0;
     private double convexHullArea = 0;
+    private double W1contour, W2contour, W3contour, W4contour;
+    private double W1ellipse, W2ellipse, W3ellipse, W4ellipse;
     // ================================= GUI PARAMS =================================
     private boolean EventsToning = getPrefs().getBoolean("Acorn.EventsToning", true);
     private boolean EnableSquare = getPrefs().getBoolean("Acorn.EnableSquare", true);
@@ -338,8 +339,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             {
                 int val = filteredMap[x][chip.getSizeY() - 1 - y];
                 mapCV.put(y, x, val, val, val);
-                ellipse.put(y, x, val, val, val);
-                convexHull.put(y, x, val, val, val);
+                ellipse.put(x, y, 0, 0, 0);
+                convexHull.put(x, y, 0, 0, 0);
                 mapCVR.put(x, y, val, val, val);
             }
  
@@ -353,63 +354,13 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
                     pointList.add(p);
                 }
         
-        // convex Hull
-        // allocate memory, for future use
-        MatOfPoint2f matHull = new MatOfPoint2f();
-        MatOfPoint2f polyHull2f = new MatOfPoint2f();
-        List<MatOfPoint> polyHullList = new ArrayList<>();
-        List<Point> hullList = new ArrayList<>();
-        MatOfInt hull = new MatOfInt();
-        // create MatOfPoint
-        MatOfPoint mapCVP = new MatOfPoint();
-        mapCVP.fromList(pointList);
-        // run convexHull algorithm and convert to array
-        if(pointList.size() > 2)
-        {
-            Imgproc.convexHull(mapCVP, hull);
-            int[] hullArray = hull.toArray();
-            // create list with proper points (hull gives indexes of input list)
-            for (int i = 0; i < hullArray.length; i++)
-                hullList.add(pointList.get(hullArray[i]));
-            // create mat from list and approximate polygonal curve
-            matHull.fromList(hullList);
-            Imgproc.approxPolyDP(matHull, polyHull2f, 1, true);
-            Point[] hullPoints = polyHull2f.toArray();
-            MatOfPoint points = new MatOfPoint();
-            points.fromArray(hullPoints);
-            polyHullList.add(points);
-            Scalar color = new Scalar(30, 255, 30);
-            Imgproc.polylines(convexHull, polyHullList, true, color);
-            // Compute paramters
-            convexHullArea = Imgproc.contourArea(points);
-            Moments hullMoments = Imgproc2.contourMoments(points);
-        }
+        // find contour
+        findContour(pointList);
+        // approximate with ellipse
+        findEllipse(pointList);       
+        // decide if it is acorn
+        classify();
         
-        // ellipse
-        MatOfPoint2f mapCV2f = new MatOfPoint2f();
-        mapCV2f.fromList(pointList);
-        // pointList = mapCV.
-        RotatedRect rect = new RotatedRect();
-        if (pointList.size() >= 5)
-            rect = Imgproc.fitEllipse(mapCV2f);
-        
-        // Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
-        Imgproc.ellipse(ellipse, rect, new Scalar(255, 30, 30));
-        // convert to list
-        List<Point> ellipsePointList = new ArrayList<>();
-        for (int i = 0; i < chip.getSizeX(); i++)
-            for (int j = 0; j < chip.getSizeY(); j++)
-                if (ellipse.get(i, j)[0] > 0)
-                {
-                    Point p = new Point(i, j);
-                    ellipsePointList.add(p);
-                }
-        // convert to MatOfPoint
-        MatOfPoint ellipseMatOfPoint = new MatOfPoint();
-        ellipseMatOfPoint.fromList(ellipsePointList);
-        // Compute parameters
-        ellipseArea = Imgproc.contourArea(ellipseMatOfPoint);
-
         // copy image to elipse and convex hull
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
@@ -543,10 +494,18 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         GLUT glut = chip.getCanvas().getGlut();
         String[] lines = {
             "ELIPSA",
-            "powierzchnia: " + Double.toString(ellipseArea),
+            "  powierzchnia: " + Integer.toString((int) Math.round(ellipseArea)),
+            "  1 współczynnik cyrkularności: " + Double.toString(Math.round(W1ellipse*1000)/1000.0),
+            "  2 współczynnik cyrkularności: " + Double.toString(Math.round(W2ellipse*1000)/1000.0),
+            "  Współczynnik Malinowskiej: " + Double.toString(Math.round(W3ellipse*1000)/1000.0),
+            "  Współczynnik Blaira-Blissa: " + Double.toString(Math.round(W4ellipse*1000)/1000.0),
             "",
             "KONTUR",
-            "powierzchnia: " + Double.toString(convexHullArea)
+            "  powierzchnia: " + Integer.toString((int) Math.round(convexHullArea)),
+            "  1 współczynnik cyrkularności: " + Double.toString(Math.round(W1contour*1000)/1000.0),
+            "  2 współczynnik cyrkularności: " + Double.toString(Math.round(W2contour*1000)/1000.0),
+            "  Współczynnik Malinowskiej: " + Double.toString(Math.round(W3contour*1000)/1000.0),
+            "  Współczynnik Blaira-Blissa: " + Double.toString(Math.round(W4contour*1000)/1000.0)
         };
         // get the string length in screen pixels , divide by chip array in screen pixels,
         // and multiply by number of pixels to get string length in screen pixels.
@@ -612,4 +571,145 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             labelHull.setIcon(iconHull);
     }
     
+    // finds contour and computes indexes
+    private void findContour(List<Point> pointList) {
+        // convex Hull
+        // allocate memory, for future use
+        MatOfPoint2f matHull = new MatOfPoint2f();
+        MatOfPoint2f polyHull2f = new MatOfPoint2f();
+        List<MatOfPoint> polyHullList = new ArrayList<>();
+        List<Point> hullList = new ArrayList<>();
+        MatOfInt hull = new MatOfInt();
+        // create MatOfPoint
+        MatOfPoint mapCVP = new MatOfPoint();
+        mapCVP.fromList(pointList);
+        Mat hullFilled = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
+        // run convexHull algorithm and convert to array
+        if(pointList.size() > 2)
+        {
+            Imgproc.convexHull(mapCVP, hull);
+            int[] hullArray = hull.toArray();
+            // create list with proper points (hull gives indexes of input list)
+            for (int i = 0; i < hullArray.length; i++)
+                hullList.add(pointList.get(hullArray[i]));
+            // create mat from list and approximate polygonal curve
+            matHull.fromList(hullList);
+            Imgproc.approxPolyDP(matHull, polyHull2f, 1, true);
+            Point[] hullPoints = polyHull2f.toArray();
+            MatOfPoint points = new MatOfPoint();
+            points.fromArray(hullPoints);
+            polyHullList.add(points);
+            Imgproc.polylines(convexHull, polyHullList, true, new Scalar(30, 255, 30));
+            
+            // Compute indexes
+            convexHullArea = Imgproc.contourArea(points);
+            Moments hullMoments = Imgproc2.contourMoments(points);
+            
+            // środek ciężkości
+            int xCenter, yCenter;
+            xCenter = (int) Math.round(hullMoments.m10 / hullMoments.m00);
+            yCenter = (int) Math.round(hullMoments.m01 / hullMoments.m00);
+            
+            // obwód
+            int circuitHull = (int) Math.round(Imgproc.arcLength(matHull, true));
+            
+            // SUM(ri^2)
+            Imgproc.fillPoly(hullFilled, polyHullList, new Scalar(255, 255, 255));
+            long sumR2 = 0;
+            for (int i = 0; i < chip.getSizeX(); i++)
+                for (int j = 0; j < chip.getSizeY(); j++)
+                    if (hullFilled.get(i, j)[0] > 0)
+                        sumR2 += (i - xCenter)*(i - xCenter) + (j - yCenter)*(j - yCenter);
+            
+            // Współczynnyki cyrkularności
+            W1contour = 2*Math.sqrt(convexHullArea / Math.PI);
+            W2contour = circuitHull / Math.PI;
+            // Współczynnik Malinowskiej
+            W3contour = circuitHull / (2 * Math.sqrt(Math.PI*convexHullArea));
+            // Blair-Bliss
+            W4contour = convexHullArea / Math.sqrt(2*Math.PI*(double)sumR2);
+        }
+    }
+    
+    // approximates with ellipse and computes indexes
+    private void findEllipse(List<Point> pointList) {
+        // ellipse
+        MatOfPoint2f mapCV2f = new MatOfPoint2f();
+        mapCV2f.fromList(pointList);
+        // pointList = mapCV.
+        RotatedRect rect = new RotatedRect();
+        if (pointList.size() >= 5)
+            rect = Imgproc.fitEllipse(mapCV2f);
+        
+        Imgproc.ellipse(ellipse, rect, new Scalar(255, 30, 30));
+
+        // convert to list
+        List<Point> ellipsePointList = new ArrayList<>();
+        for (int i = 0; i < chip.getSizeX(); i++)
+            for (int j = 0; j < chip.getSizeY(); j++)
+                if (ellipse.get(i, j)[0] > 0)
+                {
+                    Point p = new Point(i, j);
+                    ellipsePointList.add(p);
+                }
+        // convert to MatOfPoint
+        MatOfPoint ellipseMatOfPoint = new MatOfPoint();
+        ellipseMatOfPoint.fromList(ellipsePointList);
+        MatOfPoint2f ellipseMatOfPoint2f = new MatOfPoint2f();
+        ellipseMatOfPoint2f.fromList(ellipsePointList);
+        
+        // Compute indexes
+        // środek ciężkości
+        int xCenter, yCenter;
+        xCenter = (int) Math.round(rect.center.x);
+        yCenter = (int) Math.round(rect.center.y);
+        
+        // obwód
+        int circuitEllipse = ellipsePointList.size();
+        ellipseArea = 0;
+        // SUM(ri^2)
+        Mat ellipseFilled = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
+        Imgproc.ellipse(ellipseFilled, rect, new Scalar(5, 10, 15), -1);
+
+        long sumR2 = 0;
+        // Imgproc.ellipse with parameter 'line thickness' -1 puts some strange shit outside ellipse
+        for (int i = 0; i < chip.getSizeX(); i++)
+            for (int j = 0; j < chip.getSizeY(); j++)
+                if (ellipseFilled.get(i, j)[0] == 5 && ellipseFilled.get(i, j)[1] == 10 && ellipseFilled.get(i, j)[2] == 15)
+                {
+                    sumR2 += (i - xCenter)*(i - xCenter) + (j - yCenter)*(j - yCenter);
+                    ellipseArea++;
+                }
+
+        // Współczynnyki cyrkularności
+        W1ellipse = 2*Math.sqrt(ellipseArea / Math.PI);
+        W2ellipse = circuitEllipse / Math.PI;
+        // Współczynnik Malinowskiej
+        W3ellipse = circuitEllipse / (2 * Math.sqrt(Math.PI*convexHullArea));
+        // Blair-Bliss
+        W4ellipse = convexHullArea / Math.sqrt(2*Math.PI*(double)sumR2);
+    }
+    
+    // decides if acorn is on image
+    private void classify() {
+        int points = 0;
+        if (W1ellipse > 30 && W1ellipse < 35)
+            points++;
+        if (W2ellipse > 30 && W2ellipse < 35)
+            points++;
+        if (W3ellipse > 0.85 && W3ellipse < 1.05)
+            points++;
+        if (W4ellipse > 0.7 && W4ellipse < 0.9)
+            points++;
+        if (W1contour > 36 && W1contour < 40)
+            points++;
+        if (W2contour > 38 && W2contour < 42)
+            points++;
+        if (W3contour > 1 && W3contour < 1.1)
+            points++;
+        if (W4contour > 0.6 && W4contour < 0.9)
+            points++;
+        
+        isAcorn = points > 5;
+    }
 }
