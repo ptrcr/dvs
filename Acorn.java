@@ -1,14 +1,3 @@
-//TODO: jakieś opisy nad wyświetlanymi obrazami, co jest co
-//TODO:
-//TODO:
-//TODO:
-//TODO:
-//TODO:
-//TODO:
-//TODO:
-//TODO:
-
-
 package ch.unizh.ini.jaer.projects.orzeszek;
 
 /**
@@ -82,9 +71,10 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private long xCenterSum, yCenterSum;
     private JLabel labelGray;
     private JLabel labelEllipse;
+    private JLabel labelHull;
     private JFrame frame;
     private Mat mapCV;
-    private Mat elipsa;
+    private Mat ellipse;
     private Mat convexHull;
     private final int scallingRatio = 2;
     // ================================= GUI PARAMS =================================
@@ -237,8 +227,19 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         frame.setSize(scallingRatio*2*128+50, scallingRatio*2*128+50); //chip.getSizeX() nie działa (dlaczego?)
         labelGray = new JLabel();
         labelEllipse = new JLabel();
+        labelHull = new JLabel();
+        JLabel labelGrayText = new JLabel();
+        JLabel labelEllipseText = new JLabel();
+        JLabel labelHullText = new JLabel();
+        labelGrayText.setText("Wygenerowany obraz");
+        labelEllipseText.setText("Aproksymacja elipsą");
+        labelHullText.setText("Convex Hull");
+        frame.add(labelGrayText);
         frame.add(labelGray);
+        frame.add(labelEllipseText);
         frame.add(labelEllipse);
+        frame.add(labelHullText);
+        frame.add(labelHull);
         frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
     }
     
@@ -331,18 +332,24 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         
         // copy to openCV Mat type
         mapCV = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
+        Mat mapCVR = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
+        ellipse = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
+        convexHull = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8UC3);
         for (int x = 0; x < chip.getSizeX(); x++)
             for (int y = 0; y < chip.getSizeY(); y++)
             {
                 int val = filteredMap[x][chip.getSizeY() - 1 - y];
                 mapCV.put(y, x, val, val, val);
+                ellipse.put(y, x, val, val, val);
+                convexHull.put(y, x, val, val, val);
+                mapCVR.put(x, y, val, val, val);
             }
  
         // convert to list
         List<Point> pointList = new ArrayList<>();
         for (int i = 0; i < chip.getSizeX(); i++)
             for (int j = 0; j < chip.getSizeY(); j++)
-                if ( mapCV.get(i, j)[0] > 0)
+                if ( mapCVR.get(i, j)[0] > 0)
                 {
                     Point p = new Point(i, j);
                     pointList.add(p);
@@ -355,31 +362,29 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         List<MatOfPoint> polyHullList = new ArrayList<>();
         List<Point> hullList = new ArrayList<>();
         MatOfInt hull = new MatOfInt();
-        convexHull = new Mat(chip.getSizeX(), chip.getSizeY(), org.opencv.core.CvType.CV_8U);
         // create MatOfPoint
         MatOfPoint mapCVP = new MatOfPoint();
         mapCVP.fromList(pointList);
         // run convexHull algorithm and convert to array
-        /*Imgproc.convexHull(mapCVP, hull);
-        int[] hullArray = hull.toArray();
-        // create list with proper points (hull gives indexes of input list)
-        for (int i = 0; i < hullArray.length; i++)
-            hullList.add(pointList.get(hullArray[i]));
-        // create mat from list and approximate polygonal curve
-        matHull.fromList(hullList);
-        Imgproc.approxPolyDP(matHull, polyHull2f, 1, true);
-        Point[] hullPoints = polyHull2f.toArray();
-        MatOfPoint points = new MatOfPoint();
-        points.fromArray(hullPoints);
-        polyHullList.add(points);
-        Scalar color = new Scalar(240, 40, 40);
-        Imgproc.polylines(mapCV, polyHullList, true, color);
-        //for (int i = 0; i < hullPoints.length; i++)
-          //  mapCV.put(hullPoints[i].x, hullPoints[i].y, color);
-        */
+        if(pointList.size() > 2)
+        {
+            Imgproc.convexHull(mapCVP, hull);
+            int[] hullArray = hull.toArray();
+            // create list with proper points (hull gives indexes of input list)
+            for (int i = 0; i < hullArray.length; i++)
+                hullList.add(pointList.get(hullArray[i]));
+            // create mat from list and approximate polygonal curve
+            matHull.fromList(hullList);
+            Imgproc.approxPolyDP(matHull, polyHull2f, 1, true);
+            Point[] hullPoints = polyHull2f.toArray();
+            MatOfPoint points = new MatOfPoint();
+            points.fromArray(hullPoints);
+            polyHullList.add(points);
+            Scalar color = new Scalar(30, 255, 30);
+            Imgproc.polylines(convexHull, polyHullList, true, color);
+        }
         
         // ellipse
-        elipsa = Mat.zeros(mapCV.size(), CvType.CV_8UC3);       
         MatOfPoint2f mapCV2f = new MatOfPoint2f();
         mapCV2f.fromList(pointList);
         // pointList = mapCV.
@@ -388,7 +393,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             rect = Imgproc.fitEllipse(mapCV2f);
         
         // Imgproc.drawContours(elipsa, comboContourList, 0, new Scalar(255, 255, 255));
-        Imgproc.ellipse(elipsa, rect, new Scalar(255, 30, 30));
+        Imgproc.ellipse(ellipse, rect, new Scalar(255, 30, 30));
 
         // wyswietl poszczegolne kroki w osobnym okienku
         if(frame.isVisible())
@@ -598,15 +603,19 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             Size sz = new Size(scallingRatio*chip.getSizeX(), scallingRatio*chip.getSizeY());
             
             Mat mapCVL = new Mat();
-            Mat elipsaL = new Mat();
+            Mat ellipseL = new Mat();
+            Mat convexHullL = new Mat();
             
             Imgproc.resize(mapCV, mapCVL, sz);
-            Imgproc.resize(elipsa, elipsaL, sz);
+            Imgproc.resize(ellipse, ellipseL, sz);
+            Imgproc.resize(convexHull, convexHullL, sz);
             
-            ImageIcon iconEdges = new ImageIcon(Mat2BufferedImage(mapCVL));
-            labelGray.setIcon(iconEdges);
-            ImageIcon iconEllipse = new ImageIcon(Mat2BufferedImage(elipsaL));
+            ImageIcon iconGray = new ImageIcon(Mat2BufferedImage(mapCVL));
+            labelGray.setIcon(iconGray);
+            ImageIcon iconEllipse = new ImageIcon(Mat2BufferedImage(ellipseL));
             labelEllipse.setIcon(iconEllipse);
+            ImageIcon iconHull = new ImageIcon(Mat2BufferedImage(convexHullL));
+            labelHull.setIcon(iconHull);
     }
 
 }
