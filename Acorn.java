@@ -5,40 +5,23 @@ package ch.unizh.ini.jaer.projects.orzeszek;
  * @author Piotr
  */
 
-import java.awt.geom.Point2D;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.Serializable;
-import java.util.Arrays;
-import com.jogamp.opengl.GL;
+
 import com.jogamp.opengl.GL2;
 import com.jogamp.opengl.GLAutoDrawable;
-import com.jogamp.opengl.GLException;
 import com.jogamp.opengl.util.gl2.GLUT;
-import javax.swing.JFileChooser;
 import net.sf.jaer.Description;
 import net.sf.jaer.DevelopmentStatus;
 import net.sf.jaer.chip.AEChip;
-import net.sf.jaer.event.BasicEvent;
 import net.sf.jaer.event.PolarityEvent;
 import net.sf.jaer.event.EventPacket;
 import net.sf.jaer.event.OutputEventIterator;
 import net.sf.jaer.eventprocessing.EventFilter2D;
-import net.sf.jaer.eventprocessing.filter.BackgroundActivityFilter;
 import net.sf.jaer.graphics.AEChipRenderer;
 import net.sf.jaer.graphics.AEViewer;
 import net.sf.jaer.graphics.ChipCanvas;
 import net.sf.jaer.graphics.FrameAnnotater;
-import java.lang.Math;          //sqrt(), round(), toDegrees()
-import javax.swing.JOptionPane; // dialog message
 import javax.swing.JFrame;      // frame for dialog message
 import org.opencv.core.Core;
-import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.MatOfPoint2f;
@@ -55,7 +38,6 @@ import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import javax.swing.JLabel;
 import javax.swing.ImageIcon;
-import java.util.Random;
 
 @Description("Finds acorn in incoming events.")
 @DevelopmentStatus(DevelopmentStatus.Status.Experimental)
@@ -90,7 +72,15 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
     private boolean IgnoreMultipleNeighbors = getPrefs().getBoolean("Acorn.IgnoreMultipleNeighbors", true);
     private boolean OnlyOnEvents = getPrefs().getBoolean("Acorn.OnlyOnEvents", false);
     private boolean OnlyOffEvents = getPrefs().getBoolean("Acorn.OnlyOffEvents", false);
+    private boolean ShowFiltered = getPrefs().getBoolean("Acorn.ShowFiltered", true);
     
+    public boolean getShowFiltered() {
+        return this.ShowFiltered;
+    }
+    public void setShowFiltered(boolean enable) {
+        this.ShowFiltered = enable;
+        getPrefs().putBoolean("Acorn.ShowFiltered", enable);
+    }
     public boolean getOnlyOnEvents() {
         return this.OnlyOnEvents;
     }
@@ -204,6 +194,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setPropertyTooltip(ann, "AGHLogoEnabled", "Shows information about authors");
         setPropertyTooltip(ann, "MarkCenter", "Prints dot in the gravity center of events");
         setPropertyTooltip(ann, "EnableSquare", "Prints square surrounding 90% of events in frame");
+        setPropertyTooltip(nf, "ShowFiltered", "Shows image after filering");
         setPropertyTooltip(nf, "NeighborsThreshold", "Sets the threshold for noise filtering");
         setPropertyTooltip(nf, "NeighborsFilteringEnabled", "Enables removing events which do not have enough neighbors");
         setPropertyTooltip(nf, "IgnoreMultipleNeighbors", "Ignore multiple events under the same address");
@@ -222,6 +213,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
         setIgnoreMultipleNeighbors(true);
         setOnlyOnEvents(false);
         setOnlyOffEvents(false);
+        setShowFiltered(true);
         
         // nowe okno do wyświetlania wyników poszczególnych etapów
         frame = new JFrame();
@@ -377,6 +369,8 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             visualize();
         
         // second cycle for copying proper events to output packet
+        if (!ShowFiltered)
+            return in;
         for(Object e:in) { 
             //BasicEvent i = (BasicEvent)e;
             PolarityEvent i = (PolarityEvent) e;
@@ -399,7 +393,6 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             else
                 outItr.nextOutput().copyFrom(i);
         }
-        
         return out;
     }
     
@@ -705,7 +698,7 @@ public class Acorn extends EventFilter2D implements FrameAnnotater {
             points++;
         if (W2contour > 38 && W2contour < 42)
             points++;
-        if (W3contour > 1 && W3contour < 1.1)
+        if (W3contour > 0.98 && W3contour < 1.12)
             points++;
         if (W4contour > 0.6 && W4contour < 0.9)
             points++;
